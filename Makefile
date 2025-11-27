@@ -1,4 +1,4 @@
-.PHONY: help install install-dev setup db-up db-down db-logs test lint format typecheck clean run-bot run-backtest run-dashboard
+.PHONY: help venv install install-dev setup test lint format typecheck clean run-bot run-backtest run-dashboard
 
 # Default target
 help:
@@ -7,15 +7,10 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Setup:"
+	@echo "  venv          Create virtual environment"
 	@echo "  install       Install production dependencies"
 	@echo "  install-dev   Install development dependencies"
-	@echo "  setup         Full setup (install + db)"
-	@echo ""
-	@echo "Database:"
-	@echo "  db-up         Start PostgreSQL and Redis containers"
-	@echo "  db-down       Stop database containers"
-	@echo "  db-logs       Show database logs"
-	@echo "  db-tools      Start with pgAdmin and Redis Commander"
+	@echo "  setup         Full setup (venv + install)"
 	@echo ""
 	@echo "Development:"
 	@echo "  test          Run tests"
@@ -28,41 +23,31 @@ help:
 	@echo "  run-bot       Start trading bot"
 	@echo "  run-backtest  Run backtest"
 	@echo "  run-dashboard Start monitoring dashboard"
+	@echo ""
+	@echo "Utilities:"
+	@echo "  train-model   Train prediction models"
+	@echo "  update-pairs  Update pair correlations"
 
-# Installation
+# Virtual Environment
+venv:
+	python3 -m venv .venv
+	@echo "Virtual environment created. Run: source .venv/bin/activate"
+
 install:
 	pip install -e .
 
 install-dev:
 	pip install -e ".[dev,notebook]"
-	pre-commit install
 
-setup: install-dev db-up
-	@echo "Setup complete! Run 'make run-dashboard' to start."
-
-# Database
-db-up:
-	docker-compose up -d postgres redis
-	@echo "Waiting for databases to be ready..."
-	@sleep 5
-	@docker-compose ps
-
-db-down:
-	docker-compose down
-
-db-logs:
-	docker-compose logs -f postgres redis
-
-db-tools:
-	docker-compose --profile tools up -d
-	@echo "pgAdmin: http://localhost:5050"
-	@echo "Redis Commander: http://localhost:8081"
-
-db-reset:
-	docker-compose down -v
-	docker-compose up -d postgres redis
-	@sleep 5
-	@echo "Database reset complete"
+setup: venv
+	. .venv/bin/activate && pip install --upgrade pip && pip install -e ".[dev]"
+	mkdir -p data/historical data/backtest_results data/logs data/models
+	@if [ ! -f .env ]; then cp .env.example .env; echo "Created .env - please edit with your API keys"; fi
+	@echo ""
+	@echo "Setup complete!"
+	@echo "  1. Run: source .venv/bin/activate"
+	@echo "  2. Edit .env with your API keys"
+	@echo "  3. Run: make run-dashboard"
 
 # Development
 test:
@@ -92,6 +77,9 @@ clean:
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	rm -rf build/ dist/ .coverage htmlcov/
 
+clean-all: clean
+	rm -rf .venv
+
 # Run
 run-bot:
 	python scripts/run_bot.py
@@ -108,14 +96,14 @@ run-walkforward:
 run-dashboard:
 	streamlit run dashboard/app.py --server.port 8501
 
+# Model Training
+train-model:
+	python scripts/train_models.py
+
+update-pairs:
+	python scripts/update_pair_correlations.py
+
 # Utilities
-migrate:
-	alembic upgrade head
-
-migrate-create:
-	@read -p "Migration name: " name; \
-	alembic revision --autogenerate -m "$$name"
-
 shell:
 	ipython
 
@@ -126,12 +114,15 @@ notebook:
 logs:
 	tail -f data/logs/*.log
 
-# Backup
-backup-db:
-	@mkdir -p backups
-	docker-compose exec -T postgres pg_dump -U trader bitdaytrader > backups/backup_$$(date +%Y%m%d_%H%M%S).sql
-	@echo "Backup created in backups/"
+# Database (SQLite for dev, PostgreSQL for prod)
+db-init:
+	python scripts/db_migrate.py
 
-restore-db:
-	@read -p "Backup file: " file; \
-	docker-compose exec -T postgres psql -U trader bitdaytrader < $$file
+db-backup:
+	@mkdir -p backups
+	@if [ -f data/bitdaytrader.db ]; then \
+		cp data/bitdaytrader.db backups/backup_$$(date +%Y%m%d_%H%M%S).db; \
+		echo "Backup created in backups/"; \
+	else \
+		echo "No database file found"; \
+	fi
