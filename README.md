@@ -1,29 +1,42 @@
 # Bitdaytrader
 
-GMOコインAPIを使用した暗号資産デイトレード自動売買システム
+GMOコインAPIを使用した暗号資産デイトレードシステム（人間承認型）
 
 ## 概要
 
-このシステムは、GMOコインの暗号資産取引所APIを利用して、以下の戦略を組み合わせた自動売買を行います：
+LightGBMによる価格方向予測とTelegram経由の人間承認を組み合わせた半自動売買システムです。
 
-- **ペアトレード戦略（50%）**: 相関の高い通貨ペア間の価格乖離を利用
-- **トレンドフォロー戦略（50%）**: テクニカル指標に基づくトレンド追従
-- **機械学習予測**: LightGBM + Ridge + GARCHによる方向予測
+### 主要特徴
 
-## 主要機能
+- **LightGBM予測**: 15分足データから1時間後の価格方向を予測
+- **人間承認フロー**: Telegramでシグナル通知 → 人間が承認/却下
+- **Maker注文**: GMOコインのMaker手数料リベート（-0.01%）を活用
+- **厳密なリスク管理**: 1トレード2%、日次3%損失制限
 
-- 自動売買エンジン
-- 軽量予測モデル（メモリ効率重視）
-- バックテスト・ウォークフォワード分析
-- 厳密なリスク管理
-- Telegram通知
-- 監視ダッシュボード（オプション）
+## システム構成
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│ GMO Coin    │────▶│ VPS          │────▶│ Telegram    │
+│ API         │◀────│ (推論のみ)   │◀────│ (承認/却下) │
+└─────────────┘     └──────────────┘     └─────────────┘
+                           │
+                    ┌──────┴──────┐
+                    │ SQLite DB   │
+                    └─────────────┘
+```
 
 ## 必要要件
 
+### VPS（実行環境）
 - Python 3.11+
-- RAM: 3GB以上（システム割当）
-- CPU: 1コア以上
+- RAM: 4GB割当（実効1GB使用）
+- CPU: 1コア
+
+### ローカルPC（学習環境）
+- Python 3.11+
+- RAM: 8GB以上推奨
+- モデル学習用
 
 ## クイックスタート
 
@@ -50,65 +63,110 @@ pip install -e .
 
 ```bash
 cp .env.example .env
-# .envファイルを編集してAPIキーを設定
+# .envファイルを編集
 ```
 
-### 4. ボット起動
+必須設定項目：
+```bash
+# GMO Coin API
+GMO_API_KEY=your_api_key
+GMO_API_SECRET=your_api_secret
+
+# Telegram Bot（人間承認用）
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+### 4. cron設定（VPS）
 
 ```bash
-source .venv/bin/activate
-
-# ペーパートレード（テスト）
-make run-bot-paper
-
-# 本番
-make run-bot
+# 15分ごとに実行
+*/15 * * * * cd /path/to/bitdaytrader && .venv/bin/python -m src.main >> logs/cron.log 2>&1
 ```
 
 ## インストールオプション
 
 ```bash
-# 基本（軽量）
+# VPS用（軽量、推論のみ）
 pip install -e .
+
+# ローカルPC用（モデル学習）
+pip install -e ".[training]"
 
 # 開発用
 pip install -e ".[dev]"
 
-# ダッシュボード付き
+# ダッシュボード付き（オプション）
 pip install -e ".[dashboard]"
-
-# フル機能（PostgreSQL + Redis）
-pip install -e ".[full]"
 ```
 
 ## プロジェクト構造
 
 ```
 Bitdaytrader/
-├── src/                # メインソースコード
-│   ├── api/            # GMO Coin APIクライアント
-│   ├── strategy/       # 取引戦略
-│   ├── models/         # 予測モデル
-│   ├── risk/           # リスク管理
-│   ├── execution/      # 注文執行
-│   ├── backtest/       # バックテスト
-│   └── core/           # コアエンジン
-├── dashboard/          # 監視ダッシュボード
-├── config/             # 設定ファイル
-├── tests/              # テスト
-├── docs/               # ドキュメント
-└── scripts/            # 運用スクリプト
+├── src/                  # メインソースコード
+│   ├── api/              # GMO Coin APIクライアント
+│   ├── models/           # LightGBM予測モデル
+│   ├── features/         # 特徴量計算
+│   ├── risk/             # リスク管理
+│   ├── execution/        # 注文執行
+│   ├── telegram/         # Telegram Bot（人間承認）
+│   └── core/             # コアエンジン
+├── training/             # モデル学習コード（ローカルPC用）
+├── config/               # 設定ファイル
+├── tests/                # テスト
+├── docs/                 # ドキュメント
+├── models/               # 学習済みモデル（.joblibファイル）
+└── scripts/              # 運用スクリプト
 ```
 
-## ドキュメント
+## 売買フロー
 
-- [アーキテクチャ設計](docs/ARCHITECTURE.md)
-- [プロジェクト構造](docs/PROJECT_STRUCTURE.md)
-- [技術スタック](docs/TECH_STACK.md)
-- [GMO API リファレンス](docs/GMO_API_REFERENCE.md)
-- [売買戦略詳細](docs/TRADING_STRATEGY.md)
-- [予測モデル設計](docs/PREDICTION_MODEL.md)
-- [リソース最適化](docs/RESOURCE_OPTIMIZATION.md)
+```
+1. [15分ごと] GMO APIから15分足データ取得
+2. [15分ごと] 12特徴量を計算
+3. [15分ごと] LightGBMで方向予測
+4. [信頼度≥65%] Telegramへシグナル通知
+5. [15分以内] 人間が承認/却下
+6. [承認時] Maker指値注文を発注
+7. [約定後] ATRベースの損切り・分割利確を管理
+```
+
+## 特徴量（12個）
+
+| 特徴量 | 説明 |
+|--------|------|
+| return_1 | 1期間リターン |
+| return_5 | 5期間リターン |
+| return_15 | 15期間リターン |
+| volatility_20 | 20期間ボラティリティ |
+| atr_14 | ATR（14期間） |
+| rsi_14 | RSI（14期間） |
+| macd_diff | MACD - シグナル |
+| ema_ratio | 短期EMA / 長期EMA |
+| bb_position | ボリンジャーバンド位置 |
+| volume_ratio | 出来高比率 |
+| hour | 時間（0-23） |
+| day_of_week | 曜日（0-6） |
+
+## リスク管理
+
+| パラメータ | 値 | 説明 |
+|-----------|-----|------|
+| 1トレードリスク | 2% | 損切り時の最大損失 |
+| 日次損失制限 | 3% | この損失で当日取引停止 |
+| 最大ポジション | 10% | 総資金に対する上限 |
+| 1日最大取引数 | 5回 | これを超えると新規エントリー停止 |
+
+## 利確ルール（分割決済）
+
+| R倍数 | 決済比率 |
+|-------|---------|
+| 1.5R | 50% |
+| 2.5R | 30% |
+| 4.0R | 残り20% |
+
+※ 1R = 損切り幅（2×ATR）
 
 ## コマンド
 
@@ -116,50 +174,48 @@ Bitdaytrader/
 # セットアップ
 make setup              # venv作成 + 依存インストール
 
-# 実行
-make run-bot            # ボット起動
-make run-bot-paper      # ペーパートレード
-make run-backtest       # バックテスト
-make run-dashboard      # ダッシュボード起動
+# 実行（VPS）
+make run                # メイン処理実行
 
-# モデル
-make train-model        # 予測モデル学習
-make update-pairs       # ペア相関更新
+# モデル学習（ローカルPC）
+make train              # walk-forward学習
 
 # 開発
 make test               # テスト実行
 make lint               # リンター
 make format             # コード整形
-make clean              # キャッシュ削除
 ```
 
-## 売買戦略
+## ドキュメント
 
-### ペアトレード
-- Z-Score ≥ 2.0 でショートスプレッド
-- Z-Score ≤ -2.0 でロングスプレッド
-- Z-Score → 0 で利確
+- [アーキテクチャ設計](docs/ARCHITECTURE.md)
+- [売買戦略詳細](docs/TRADING_STRATEGY.md)
+- [予測モデル設計](docs/PREDICTION_MODEL.md)
+- [GMO API リファレンス](docs/GMO_API_REFERENCE.md)
+- [リソース最適化](docs/RESOURCE_OPTIMIZATION.md)
 
-### トレンドフォロー
-- EMA (9/21/55) の並びでトレンド判定
-- RSI, MACD でフィルタリング
-- ATRベースの損切り・利確
+## リソース使用量（VPS）
 
-## リスク管理
+| 構成 | メモリ | 備考 |
+|------|--------|------|
+| 推論のみ | ~500MB | 通常運用 |
+| +ログ保持 | ~700MB | 履歴データ含む |
 
-| パラメータ | デフォルト値 | 説明 |
-|-----------|-------------|------|
-| 1日最大損失 | 2% | 日次損失がこの値に達すると取引停止 |
-| 1ポジション最大サイズ | 5% | 総資金に対する1ポジションの上限 |
-| 総エクスポージャー | 30% | 全ポジション合計の上限 |
+## Telegram通知例
 
-## リソース使用量
+```
+🔔 新規シグナル
 
-| 構成 | メモリ | CPU |
-|------|--------|-----|
-| 最小（ボットのみ） | ~1.4 GB | 50% |
-| 標準（+予測） | ~2.0 GB | 50% |
-| フル（+バックテスト） | ~3.0 GB | 80% |
+通貨: BTC/JPY
+方向: 🟢 ロング
+信頼度: 72.3%
+現在価格: ¥6,234,500
+推奨ロット: 0.05 BTC
+
+[ 承認 ] [ 却下 ]
+
+⏱ 15分以内に応答してください
+```
 
 ## 免責事項
 
