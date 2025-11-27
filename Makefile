@@ -1,4 +1,4 @@
-.PHONY: help venv install install-dev setup test lint format typecheck clean run-bot run-backtest run-dashboard
+.PHONY: help venv install install-dev install-training setup test lint format typecheck clean run train fetch-data
 
 # Default target
 help:
@@ -7,26 +7,30 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Setup:"
-	@echo "  venv          Create virtual environment"
-	@echo "  install       Install production dependencies"
-	@echo "  install-dev   Install development dependencies"
-	@echo "  setup         Full setup (venv + install)"
+	@echo "  venv             Create virtual environment"
+	@echo "  install          Install production dependencies (VPS)"
+	@echo "  install-dev      Install development dependencies"
+	@echo "  install-training Install training dependencies (local PC)"
+	@echo "  setup            Full setup (venv + install)"
 	@echo ""
 	@echo "Development:"
-	@echo "  test          Run tests"
-	@echo "  lint          Run linter (ruff)"
-	@echo "  format        Format code (black + ruff)"
-	@echo "  typecheck     Run type checker (mypy)"
-	@echo "  clean         Remove cache and build files"
+	@echo "  test             Run tests"
+	@echo "  lint             Run linter (ruff)"
+	@echo "  format           Format code (black + ruff)"
+	@echo "  typecheck        Run type checker (mypy)"
+	@echo "  clean            Remove cache and build files"
 	@echo ""
 	@echo "Run:"
-	@echo "  run-bot       Start trading bot"
-	@echo "  run-backtest  Run backtest"
-	@echo "  run-dashboard Start monitoring dashboard"
+	@echo "  run              Run trading cycle (VPS)"
+	@echo "  run-paper        Run in paper trading mode"
+	@echo ""
+	@echo "Training (local PC):"
+	@echo "  fetch-data       Fetch historical data from GMO"
+	@echo "  train            Train LightGBM model"
 	@echo ""
 	@echo "Utilities:"
-	@echo "  train-model   Train prediction models"
-	@echo "  update-pairs  Update pair correlations"
+	@echo "  logs             Tail log files"
+	@echo "  shell            Start IPython shell"
 
 # Virtual Environment
 venv:
@@ -37,17 +41,20 @@ install:
 	pip install -e .
 
 install-dev:
-	pip install -e ".[dev,notebook]"
+	pip install -e ".[dev]"
+
+install-training:
+	pip install -e ".[training]"
 
 setup: venv
 	. .venv/bin/activate && pip install --upgrade pip && pip install -e ".[dev]"
-	mkdir -p data/historical data/backtest_results data/logs data/models
+	mkdir -p data logs models
 	@if [ ! -f .env ]; then cp .env.example .env; echo "Created .env - please edit with your API keys"; fi
 	@echo ""
 	@echo "Setup complete!"
 	@echo "  1. Run: source .venv/bin/activate"
 	@echo "  2. Edit .env with your API keys"
-	@echo "  3. Run: make run-dashboard"
+	@echo "  3. Set up cron: */15 * * * * cd $(pwd) && .venv/bin/python -m src.main"
 
 # Development
 test:
@@ -57,11 +64,11 @@ test-fast:
 	pytest tests/ -v -x --ff
 
 lint:
-	ruff check src/ tests/ scripts/ dashboard/
+	ruff check src/ tests/ scripts/ config/ training/
 
 format:
-	black src/ tests/ scripts/ dashboard/ config/
-	ruff check --fix src/ tests/ scripts/ dashboard/
+	black src/ tests/ scripts/ config/ training/
+	ruff check --fix src/ tests/ scripts/ config/ training/
 
 typecheck:
 	mypy src/
@@ -80,49 +87,40 @@ clean:
 clean-all: clean
 	rm -rf .venv
 
-# Run
-run-bot:
-	python scripts/run_bot.py
+# Run (VPS)
+run:
+	python -m src.main
 
-run-bot-paper:
-	TRADING_MODE=paper python scripts/run_bot.py
+run-paper:
+	MODE=paper python -m src.main
 
-run-backtest:
-	python scripts/run_backtest.py
+# Training (local PC)
+fetch-data:
+	python scripts/fetch_data.py --days 420 --output data/historical.csv
 
-run-walkforward:
-	python scripts/run_walkforward.py
-
-run-dashboard:
-	streamlit run dashboard/app.py --server.port 8501
-
-# Model Training
-train-model:
-	python scripts/train_models.py
-
-update-pairs:
-	python scripts/update_pair_correlations.py
+train:
+	python scripts/train_model.py --data data/historical.csv --output models/lightgbm_model.joblib
 
 # Utilities
 shell:
 	ipython
 
-notebook:
-	jupyter notebook notebooks/
-
-# Logs
 logs:
-	tail -f data/logs/*.log
+	tail -f logs/*.log
 
-# Database (SQLite for dev, PostgreSQL for prod)
-db-init:
-	python scripts/db_migrate.py
-
+# Database
 db-backup:
 	@mkdir -p backups
-	@if [ -f data/bitdaytrader.db ]; then \
-		cp data/bitdaytrader.db backups/backup_$$(date +%Y%m%d_%H%M%S).db; \
+	@if [ -f data/trading.db ]; then \
+		cp data/trading.db backups/backup_$$(date +%Y%m%d_%H%M%S).db; \
 		echo "Backup created in backups/"; \
 	else \
 		echo "No database file found"; \
 	fi
+
+# Cron setup helper
+cron-setup:
+	@echo "Add this line to your crontab (crontab -e):"
+	@echo ""
+	@echo "*/15 * * * * cd $$(pwd) && .venv/bin/python -m src.main >> logs/cron.log 2>&1"
+	@echo ""
