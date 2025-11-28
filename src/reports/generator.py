@@ -36,6 +36,7 @@ class ReportGenerator:
         position_info: dict[str, Any] | None,
         capital: float,
         report_type: str = "朝",
+        direction_stats: dict[str, Any] | None = None,
     ) -> bool:
         """
         Generate and send status report (morning/noon/evening).
@@ -44,6 +45,7 @@ class ReportGenerator:
             position_info: Current position information
             capital: Current capital
             report_type: Report type (朝/昼/夕方)
+            direction_stats: Optional LONG/SHORT breakdown from RiskManager
         """
         today = date.today().isoformat()
         daily_record = self.daily_pnl_repo.get_or_create(today)
@@ -53,14 +55,20 @@ class ReportGenerator:
             capital=capital,
             daily_pnl=daily_record.net_pnl,
             daily_trades=daily_record.trades,
+            direction_stats=direction_stats,
         )
 
-    async def generate_daily_report(self, capital: float) -> bool:
+    async def generate_daily_report(
+        self,
+        capital: float,
+        direction_stats: dict[str, Any] | None = None,
+    ) -> bool:
         """
         Generate and send daily report.
 
         Args:
             capital: Current capital
+            direction_stats: Optional LONG/SHORT breakdown from RiskManager
         """
         today = date.today().isoformat()
         daily_record = self.daily_pnl_repo.get_or_create(today)
@@ -72,6 +80,7 @@ class ReportGenerator:
             net_pnl=daily_record.net_pnl,
             capital=capital,
             report_type="日次",
+            direction_stats=direction_stats,
         )
 
     async def generate_weekly_report(self, capital: float) -> bool:

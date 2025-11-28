@@ -1,10 +1,22 @@
-"""Risk management module."""
+"""Risk management module with direction-specific settings."""
 
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Literal
 
-import pandas as pd
 from loguru import logger
+
+
+@dataclass
+class DirectionConfig:
+    """Configuration for a specific direction (LONG or SHORT)."""
+
+    risk_per_trade: float
+    max_position_size: float
+    max_daily_trades: int
+    confidence_threshold: float
+    sl_atr_multiple: float
+    tp_levels: list[tuple[float, float]]  # (R-multiple, ratio)
 
 
 @dataclass
@@ -25,42 +37,98 @@ class RiskCheck:
     reason: str = ""
 
 
+@dataclass
+class DirectionStats:
+    """Statistics for a specific direction."""
+
+    trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    pnl: float = 0.0
+
+    @property
+    def win_rate(self) -> float:
+        return self.wins / self.trades if self.trades > 0 else 0.0
+
+
 class RiskManager:
-    """Risk management for trading operations."""
+    """Risk management with separate settings for LONG and SHORT positions."""
 
     def __init__(
         self,
-        risk_per_trade: float = 0.02,
+        # LONG settings
+        long_risk_per_trade: float = 0.02,
+        long_max_position_size: float = 0.10,
+        long_max_daily_trades: int = 3,
+        long_confidence_threshold: float = 0.65,
+        long_sl_atr_multiple: float = 2.0,
+        long_tp_levels: list[tuple[float, float]] | None = None,
+        # SHORT settings (stricter by default)
+        short_risk_per_trade: float = 0.015,
+        short_max_position_size: float = 0.07,
+        short_max_daily_trades: int = 2,
+        short_confidence_threshold: float = 0.70,
+        short_sl_atr_multiple: float = 1.5,
+        short_tp_levels: list[tuple[float, float]] | None = None,
+        # Global settings
         daily_loss_limit: float = 0.03,
-        max_position_size: float = 0.10,
         max_daily_trades: int = 5,
-        sl_atr_multiple: float = 2.0,
     ) -> None:
         """
-        Initialize risk manager.
+        Initialize risk manager with direction-specific settings.
 
         Args:
-            risk_per_trade: Max loss per trade as fraction of capital (2% = 0.02)
-            daily_loss_limit: Max daily loss as fraction of capital (3% = 0.03)
-            max_position_size: Max position size as fraction of capital (10% = 0.10)
-            max_daily_trades: Maximum number of trades per day
-            sl_atr_multiple: Stop loss in ATR multiples
+            long_*: Settings for LONG positions
+            short_*: Settings for SHORT positions (stricter defaults)
+            daily_loss_limit: Max daily loss as fraction of capital
+            max_daily_trades: Max total trades per day
         """
-        self.risk_per_trade = risk_per_trade
-        self.daily_loss_limit = daily_loss_limit
-        self.max_position_size = max_position_size
-        self.max_daily_trades = max_daily_trades
-        self.sl_atr_multiple = sl_atr_multiple
+        # LONG configuration
+        self.long_config = DirectionConfig(
+            risk_per_trade=long_risk_per_trade,
+            max_position_size=long_max_position_size,
+            max_daily_trades=long_max_daily_trades,
+            confidence_threshold=long_confidence_threshold,
+            sl_atr_multiple=long_sl_atr_multiple,
+            tp_levels=long_tp_levels or [(1.5, 0.5), (2.5, 0.3), (4.0, 0.2)],
+        )
 
-        # Daily tracking
+        # SHORT configuration (stricter)
+        self.short_config = DirectionConfig(
+            risk_per_trade=short_risk_per_trade,
+            max_position_size=short_max_position_size,
+            max_daily_trades=short_max_daily_trades,
+            confidence_threshold=short_confidence_threshold,
+            sl_atr_multiple=short_sl_atr_multiple,
+            tp_levels=short_tp_levels or [(1.0, 0.5), (1.5, 0.3), (2.5, 0.2)],
+        )
+
+        # Global limits
+        self.daily_loss_limit = daily_loss_limit
+        self.max_daily_trades = max_daily_trades
+
+        # Daily tracking - total
         self._daily_pnl: float = 0.0
         self._daily_trades: int = 0
         self._last_reset_date: date | None = None
+
+        # Daily tracking - by direction
+        self._long_stats = DirectionStats()
+        self._short_stats = DirectionStats()
+
+    def get_config(self, side: str) -> DirectionConfig:
+        """Get configuration for the specified direction."""
+        if side == "BUY":
+            return self.long_config
+        else:
+            return self.short_config
 
     def reset_daily(self) -> None:
         """Reset daily counters."""
         self._daily_pnl = 0.0
         self._daily_trades = 0
+        self._long_stats = DirectionStats()
+        self._short_stats = DirectionStats()
         self._last_reset_date = date.today()
         logger.info("Daily risk counters reset")
 
@@ -70,34 +138,58 @@ class RiskManager:
         if self._last_reset_date != today:
             self.reset_daily()
 
-    def add_trade_result(self, pnl: float) -> None:
+    def add_trade_result(self, pnl: float, side: str) -> None:
         """
         Record a trade result.
 
         Args:
-            pnl: Profit/loss from the trade (positive or negative)
+            pnl: Profit/loss from the trade
+            side: "BUY" (LONG) or "SELL" (SHORT)
         """
         self._check_and_reset_daily()
+
+        # Update global stats
         self._daily_pnl += pnl
         self._daily_trades += 1
+
+        # Update direction-specific stats
+        if side == "BUY":
+            stats = self._long_stats
+            direction = "LONG"
+        else:
+            stats = self._short_stats
+            direction = "SHORT"
+
+        stats.trades += 1
+        stats.pnl += pnl
+        if pnl > 0:
+            stats.wins += 1
+        else:
+            stats.losses += 1
+
         logger.info(
-            f"Trade recorded: PnL={pnl:.2f}, Daily PnL={self._daily_pnl:.2f}, "
-            f"Trades today={self._daily_trades}"
+            f"{direction} trade recorded: PnL={pnl:.2f}, "
+            f"{direction} stats: trades={stats.trades}, win_rate={stats.win_rate:.1%}, pnl={stats.pnl:.2f}"
         )
 
-    def check_can_trade(self, capital: float) -> RiskCheck:
+    def check_can_trade(self, capital: float, side: str) -> RiskCheck:
         """
-        Check if trading is allowed based on risk limits.
+        Check if trading is allowed for a specific direction.
 
         Args:
             capital: Current capital
+            side: "BUY" (LONG) or "SELL" (SHORT)
 
         Returns:
             RiskCheck with allowed status and reason if not allowed
         """
         self._check_and_reset_daily()
 
-        # Check daily loss limit
+        config = self.get_config(side)
+        direction = "LONG" if side == "BUY" else "SHORT"
+        stats = self._long_stats if side == "BUY" else self._short_stats
+
+        # Check global daily loss limit
         daily_loss_ratio = abs(self._daily_pnl) / capital if capital > 0 else 0
         if self._daily_pnl < 0 and daily_loss_ratio >= self.daily_loss_limit:
             return RiskCheck(
@@ -105,11 +197,40 @@ class RiskManager:
                 reason=f"Daily loss limit reached: {daily_loss_ratio:.2%} >= {self.daily_loss_limit:.2%}",
             )
 
-        # Check max daily trades
+        # Check global max daily trades
         if self._daily_trades >= self.max_daily_trades:
             return RiskCheck(
                 allowed=False,
                 reason=f"Max daily trades reached: {self._daily_trades} >= {self.max_daily_trades}",
+            )
+
+        # Check direction-specific max trades
+        if stats.trades >= config.max_daily_trades:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Max {direction} trades reached: {stats.trades} >= {config.max_daily_trades}",
+            )
+
+        return RiskCheck(allowed=True)
+
+    def check_confidence(self, confidence: float, side: str) -> RiskCheck:
+        """
+        Check if confidence meets threshold for direction.
+
+        Args:
+            confidence: Model confidence
+            side: "BUY" (LONG) or "SELL" (SHORT)
+
+        Returns:
+            RiskCheck with result
+        """
+        config = self.get_config(side)
+        direction = "LONG" if side == "BUY" else "SHORT"
+
+        if confidence < config.confidence_threshold:
+            return RiskCheck(
+                allowed=False,
+                reason=f"{direction} confidence {confidence:.2%} below threshold {config.confidence_threshold:.2%}",
             )
 
         return RiskCheck(allowed=True)
@@ -122,35 +243,36 @@ class RiskManager:
         side: str,
     ) -> PositionSize:
         """
-        Calculate position size based on ATR-based stop loss.
+        Calculate position size based on direction-specific settings.
 
         Args:
             capital: Available capital
             entry_price: Expected entry price
             atr: Current ATR value
-            side: "BUY" or "SELL"
+            side: "BUY" (LONG) or "SELL" (SHORT)
 
         Returns:
             PositionSize with size, stop loss, and risk details
         """
-        # Calculate stop loss price
-        stop_distance = atr * self.sl_atr_multiple
+        config = self.get_config(side)
+        direction = "LONG" if side == "BUY" else "SHORT"
+
+        # Calculate stop loss price using direction-specific ATR multiple
+        stop_distance = atr * config.sl_atr_multiple
 
         if side == "BUY":
             stop_loss = entry_price - stop_distance
         else:
             stop_loss = entry_price + stop_distance
 
-        # Calculate risk amount
-        risk_amount = capital * self.risk_per_trade
+        # Calculate risk amount using direction-specific risk per trade
+        risk_amount = capital * config.risk_per_trade
 
         # Calculate position size based on risk
-        # Risk = Position Size * Stop Distance
-        # Position Size = Risk / Stop Distance
         size_by_risk = risk_amount / stop_distance
 
-        # Check max position size limit
-        max_position_value = capital * self.max_position_size
+        # Check direction-specific max position size limit
+        max_position_value = capital * config.max_position_size
         max_size = max_position_value / entry_price
 
         # Take the smaller of the two
@@ -158,10 +280,11 @@ class RiskManager:
         position_value = final_size * entry_price
 
         logger.debug(
-            f"Position size calculation: capital={capital:.0f}, "
+            f"{direction} position size: capital={capital:.0f}, "
             f"entry={entry_price:.0f}, atr={atr:.0f}, "
-            f"size_by_risk={size_by_risk:.6f}, max_size={max_size:.6f}, "
-            f"final_size={final_size:.6f}"
+            f"risk_per_trade={config.risk_per_trade:.2%}, "
+            f"sl_atr_mult={config.sl_atr_multiple}, "
+            f"size={final_size:.6f}"
         )
 
         return PositionSize(
@@ -171,30 +294,35 @@ class RiskManager:
             position_value=position_value,
         )
 
-    def calculate_take_profit_levels(
+    def get_take_profit_levels(self, side: str) -> list[tuple[float, float]]:
+        """Get take profit levels for a direction."""
+        config = self.get_config(side)
+        return config.tp_levels
+
+    def calculate_take_profit_prices(
         self,
         entry_price: float,
         stop_loss: float,
         side: str,
-        tp_levels: list[tuple[float, float]],
     ) -> list[tuple[float, float]]:
         """
-        Calculate take profit price levels.
+        Calculate take profit price levels for a direction.
 
         Args:
             entry_price: Entry price
             stop_loss: Stop loss price
-            side: "BUY" or "SELL"
-            tp_levels: List of (R-multiple, ratio) tuples
+            side: "BUY" (LONG) or "SELL" (SHORT)
 
         Returns:
             List of (price, ratio) tuples for take profit levels
         """
+        config = self.get_config(side)
+
         # Calculate 1R (risk in price terms)
         one_r = abs(entry_price - stop_loss)
 
         result = []
-        for r_multiple, ratio in tp_levels:
+        for r_multiple, ratio in config.tp_levels:
             if side == "BUY":
                 tp_price = entry_price + (one_r * r_multiple)
             else:
@@ -204,40 +332,86 @@ class RiskManager:
 
         return result
 
-    def get_daily_stats(self) -> dict[str, float | int]:
-        """Get current daily statistics."""
+    def get_daily_stats(self) -> dict:
+        """Get current daily statistics including direction breakdown."""
         self._check_and_reset_daily()
         return {
-            "daily_pnl": self._daily_pnl,
-            "daily_trades": self._daily_trades,
             "date": self._last_reset_date.isoformat() if self._last_reset_date else "",
+            "total": {
+                "trades": self._daily_trades,
+                "pnl": self._daily_pnl,
+            },
+            "long": {
+                "trades": self._long_stats.trades,
+                "wins": self._long_stats.wins,
+                "losses": self._long_stats.losses,
+                "pnl": self._long_stats.pnl,
+                "win_rate": self._long_stats.win_rate,
+            },
+            "short": {
+                "trades": self._short_stats.trades,
+                "wins": self._short_stats.wins,
+                "losses": self._short_stats.losses,
+                "pnl": self._short_stats.pnl,
+                "win_rate": self._short_stats.win_rate,
+            },
         }
+
+    def get_direction_performance_summary(self) -> str:
+        """Get a formatted summary of direction performance."""
+        stats = self.get_daily_stats()
+
+        long = stats["long"]
+        short = stats["short"]
+
+        summary = f"""
+Direction Performance (Today):
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LONG:
+  Trades: {long['trades']}
+  Win Rate: {long['win_rate']:.1%}
+  PnL: ¥{long['pnl']:,.0f}
+
+SHORT:
+  Trades: {short['trades']}
+  Win Rate: {short['win_rate']:.1%}
+  PnL: ¥{short['pnl']:,.0f}
+
+Total PnL: ¥{stats['total']['pnl']:,.0f}
+"""
+        return summary.strip()
 
     def validate_order(
         self,
         capital: float,
         price: float,
         size: float,
+        side: str,
     ) -> RiskCheck:
         """
-        Validate an order against risk limits.
+        Validate an order against direction-specific risk limits.
 
         Args:
             capital: Current capital
             price: Order price
             size: Order size
+            side: "BUY" (LONG) or "SELL" (SHORT)
 
         Returns:
             RiskCheck with validation result
         """
+        config = self.get_config(side)
+        direction = "LONG" if side == "BUY" else "SHORT"
+
         # Check position size limit
         position_value = price * size
         position_ratio = position_value / capital if capital > 0 else float("inf")
 
-        if position_ratio > self.max_position_size:
+        if position_ratio > config.max_position_size:
             return RiskCheck(
                 allowed=False,
-                reason=f"Position size exceeds limit: {position_ratio:.2%} > {self.max_position_size:.2%}",
+                reason=f"{direction} position size exceeds limit: {position_ratio:.2%} > {config.max_position_size:.2%}",
             )
 
         return RiskCheck(allowed=True)

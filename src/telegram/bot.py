@@ -182,6 +182,7 @@ class TelegramBot:
         net_pnl: float,
         capital: float,
         report_type: str = "日次",
+        direction_stats: dict[str, Any] | None = None,
     ) -> bool:
         """
         Send daily trading report.
@@ -193,10 +194,37 @@ class TelegramBot:
             net_pnl: Net profit/loss
             capital: Current capital
             report_type: Report type (朝/昼/夕方)
+            direction_stats: Optional direction-specific statistics
         """
         win_rate = (wins / trades * 100) if trades > 0 else 0
         pnl_sign = "+" if net_pnl >= 0 else ""
         emoji = "📊" if report_type == "日次" else "📋"
+
+        # Build direction breakdown if available
+        direction_text = ""
+        if direction_stats:
+            long = direction_stats.get("long", {})
+            short = direction_stats.get("short", {})
+
+            long_trades = long.get("trades", 0)
+            long_pnl = long.get("pnl", 0)
+            long_wr = long.get("win_rate", 0)
+            long_pnl_sign = "+" if long_pnl >= 0 else ""
+
+            short_trades = short.get("trades", 0)
+            short_pnl = short.get("pnl", 0)
+            short_wr = short.get("win_rate", 0)
+            short_pnl_sign = "+" if short_pnl >= 0 else ""
+
+            direction_text = f"""
+📈 LONG:
+  • 取引: {long_trades}回 | 勝率: {long_wr:.0%}
+  • 損益: {long_pnl_sign}¥{long_pnl:,.0f}
+
+📉 SHORT:
+  • 取引: {short_trades}回 | 勝率: {short_wr:.0%}
+  • 損益: {short_pnl_sign}¥{short_pnl:,.0f}
+"""
 
         text = f"""
 {emoji} <b>{report_type}レポート</b>
@@ -204,11 +232,11 @@ class TelegramBot:
 
 📅 日付: {date}
 
-📈 取引実績:
+📊 全体実績:
   • 取引数: {trades}回
   • 勝率: {win_rate:.1f}%
   • 勝ち: {wins}回 / 負け: {trades - wins}回
-
+{direction_text}
 💰 損益:
   • 本日損益: {pnl_sign}¥{net_pnl:,.0f}
   • 現在資金: ¥{capital:,.0f}
@@ -314,6 +342,7 @@ class TelegramBot:
         capital: float,
         daily_pnl: float,
         daily_trades: int,
+        direction_stats: dict[str, Any] | None = None,
     ) -> bool:
         """Send current status report (morning/noon/evening)."""
         position_text = "なし"
@@ -327,6 +356,26 @@ class TelegramBot:
 
         pnl_sign = "+" if daily_pnl >= 0 else ""
 
+        # Direction breakdown
+        direction_text = ""
+        if direction_stats:
+            long = direction_stats.get("long", {})
+            short = direction_stats.get("short", {})
+
+            long_trades = long.get("trades", 0)
+            long_pnl = long.get("pnl", 0)
+            long_pnl_sign = "+" if long_pnl >= 0 else ""
+
+            short_trades = short.get("trades", 0)
+            short_pnl = short.get("pnl", 0)
+            short_pnl_sign = "+" if short_pnl >= 0 else ""
+
+            if long_trades > 0 or short_trades > 0:
+                direction_text = f"""
+📈 LONG: {long_trades}回 ({long_pnl_sign}¥{long_pnl:,.0f})
+📉 SHORT: {short_trades}回 ({short_pnl_sign}¥{short_pnl:,.0f})
+"""
+
         text = f"""
 📋 <b>ステータスレポート</b>
 ━━━━━━━━━━━━━━
@@ -336,7 +385,7 @@ class TelegramBot:
 📊 本日の実績:
   • 取引数: {daily_trades}回
   • 損益: {pnl_sign}¥{daily_pnl:,.0f}
-
+{direction_text}
 📍 現在ポジション:
 {position_text}
 

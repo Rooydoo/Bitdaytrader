@@ -42,14 +42,25 @@ class Settings(BaseSettings):
     leverage: float = Field(default=1.2, description="Leverage ratio (1.0-2.0)")
     margin_call_threshold: float = Field(default=0.75, description="Margin maintenance ratio")
 
-    # Risk Management
-    risk_per_trade: float = Field(default=0.02, description="Risk per trade (2%)")
+    # Risk Management - LONG positions (default/less risky)
+    long_risk_per_trade: float = Field(default=0.02, description="Risk per trade for LONG (2%)")
+    long_max_position_size: float = Field(default=0.10, description="Max position size for LONG (10%)")
+    long_max_daily_trades: int = Field(default=3, description="Max LONG trades per day")
+    long_confidence_threshold: float = Field(default=0.65, description="Min confidence for LONG")
+    long_sl_atr_multiple: float = Field(default=2.0, description="Stop loss ATR multiple for LONG")
+
+    # Risk Management - SHORT positions (stricter/higher risk)
+    short_risk_per_trade: float = Field(default=0.015, description="Risk per trade for SHORT (1.5%)")
+    short_max_position_size: float = Field(default=0.07, description="Max position size for SHORT (7%)")
+    short_max_daily_trades: int = Field(default=2, description="Max SHORT trades per day")
+    short_confidence_threshold: float = Field(default=0.70, description="Min confidence for SHORT (stricter)")
+    short_sl_atr_multiple: float = Field(default=1.5, description="Stop loss ATR multiple for SHORT (tighter)")
+
+    # Global Risk Limits
     daily_loss_limit: float = Field(default=0.03, description="Daily loss limit (3%)")
-    max_position_size: float = Field(default=0.10, description="Max position size (10%)")
-    max_daily_trades: int = Field(default=5, description="Max trades per day")
+    max_daily_trades: int = Field(default=5, description="Max total trades per day")
 
     # Model Settings
-    confidence_threshold: float = Field(default=0.65, description="Min confidence to trade")
     model_path: str = Field(default="models/lightgbm_model.joblib", description="Model file path")
 
     # Database
@@ -72,16 +83,21 @@ class Settings(BaseSettings):
         default="paper", description="Execution mode"
     )
 
-    # Take Profit Levels (R multiples)
-    tp_level_1: float = Field(default=1.5, description="First TP level (R)")
-    tp_ratio_1: float = Field(default=0.5, description="First TP ratio")
-    tp_level_2: float = Field(default=2.5, description="Second TP level (R)")
-    tp_ratio_2: float = Field(default=0.3, description="Second TP ratio")
-    tp_level_3: float = Field(default=4.0, description="Third TP level (R)")
-    tp_ratio_3: float = Field(default=0.2, description="Third TP ratio")
+    # Take Profit Levels - LONG (R multiples, can let profits run)
+    long_tp_level_1: float = Field(default=1.5, description="First TP level for LONG (R)")
+    long_tp_ratio_1: float = Field(default=0.5, description="First TP ratio for LONG")
+    long_tp_level_2: float = Field(default=2.5, description="Second TP level for LONG (R)")
+    long_tp_ratio_2: float = Field(default=0.3, description="Second TP ratio for LONG")
+    long_tp_level_3: float = Field(default=4.0, description="Third TP level for LONG (R)")
+    long_tp_ratio_3: float = Field(default=0.2, description="Third TP ratio for LONG")
 
-    # Stop Loss (ATR multiple)
-    sl_atr_multiple: float = Field(default=2.0, description="Stop loss ATR multiple")
+    # Take Profit Levels - SHORT (R multiples, take profits faster)
+    short_tp_level_1: float = Field(default=1.0, description="First TP level for SHORT (R)")
+    short_tp_ratio_1: float = Field(default=0.5, description="First TP ratio for SHORT")
+    short_tp_level_2: float = Field(default=1.5, description="Second TP level for SHORT (R)")
+    short_tp_ratio_2: float = Field(default=0.3, description="Second TP ratio for SHORT")
+    short_tp_level_3: float = Field(default=2.5, description="Third TP level for SHORT (R)")
+    short_tp_ratio_3: float = Field(default=0.2, description="Third TP ratio for SHORT")
 
 
 @lru_cache

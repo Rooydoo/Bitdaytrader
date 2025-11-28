@@ -53,11 +53,31 @@ class TradingEngine:
         self.feature_calc = FeatureCalculator()
         self.predictor = Predictor(settings.model_path)
         self.risk_manager = RiskManager(
-            risk_per_trade=settings.risk_per_trade,
+            # LONG settings
+            long_risk_per_trade=settings.long_risk_per_trade,
+            long_max_position_size=settings.long_max_position_size,
+            long_max_daily_trades=settings.long_max_daily_trades,
+            long_confidence_threshold=settings.long_confidence_threshold,
+            long_sl_atr_multiple=settings.long_sl_atr_multiple,
+            long_tp_levels=[
+                (settings.long_tp_level_1, settings.long_tp_ratio_1),
+                (settings.long_tp_level_2, settings.long_tp_ratio_2),
+                (settings.long_tp_level_3, settings.long_tp_ratio_3),
+            ],
+            # SHORT settings
+            short_risk_per_trade=settings.short_risk_per_trade,
+            short_max_position_size=settings.short_max_position_size,
+            short_max_daily_trades=settings.short_max_daily_trades,
+            short_confidence_threshold=settings.short_confidence_threshold,
+            short_sl_atr_multiple=settings.short_sl_atr_multiple,
+            short_tp_levels=[
+                (settings.short_tp_level_1, settings.short_tp_ratio_1),
+                (settings.short_tp_level_2, settings.short_tp_ratio_2),
+                (settings.short_tp_level_3, settings.short_tp_ratio_3),
+            ],
+            # Global settings
             daily_loss_limit=settings.daily_loss_limit,
-            max_position_size=settings.max_position_size,
             max_daily_trades=settings.max_daily_trades,
-            sl_atr_multiple=settings.sl_atr_multiple,
         )
         self.order_manager = OrderManager(self.client, settings.symbol)
 
@@ -157,12 +177,6 @@ class TradingEngine:
         else:
             effective_capital = capital
 
-        # Check risk limits
-        risk_check = self.risk_manager.check_can_trade(capital)
-        if not risk_check.allowed:
-            logger.info(f"Trading not allowed: {risk_check.reason}")
-            return
-
         # Calculate features
         features = self.feature_calc.get_latest_features(df)
         if features is None:
@@ -181,13 +195,6 @@ class TradingEngine:
         # Record signal
         self._record_signal(prediction, confidence, df["close"].iloc[-1], features)
 
-        # Check confidence threshold
-        if confidence < self.settings.confidence_threshold:
-            logger.info(
-                f"Confidence {confidence:.4f} below threshold {self.settings.confidence_threshold}"
-            )
-            return
-
         # Determine trade direction
         # prediction == 1: price will go UP -> LONG (BUY)
         # prediction == 0: price will go DOWN -> SHORT (SELL)
@@ -197,6 +204,18 @@ class TradingEngine:
         else:
             side = "SELL"
             direction = "SHORT"
+
+        # Check direction-specific risk limits
+        risk_check = self.risk_manager.check_can_trade(capital, side)
+        if not risk_check.allowed:
+            logger.info(f"{direction} trading not allowed: {risk_check.reason}")
+            return
+
+        # Check direction-specific confidence threshold
+        confidence_check = self.risk_manager.check_confidence(confidence, side)
+        if not confidence_check.allowed:
+            logger.info(confidence_check.reason)
+            return
 
         logger.info(f"Signal: {direction} with confidence {confidence:.4f}")
 
@@ -235,16 +254,11 @@ class TradingEngine:
             side=side,
         )
 
-        # Calculate take profit levels
-        tp_levels = self.risk_manager.calculate_take_profit_levels(
+        # Calculate take profit levels (direction-specific)
+        tp_levels = self.risk_manager.calculate_take_profit_prices(
             entry_price=current_price,
             stop_loss=position.stop_loss,
             side=side,
-            tp_levels=[
-                (self.settings.tp_level_1, self.settings.tp_ratio_1),
-                (self.settings.tp_level_2, self.settings.tp_ratio_2),
-                (self.settings.tp_level_3, self.settings.tp_ratio_3),
-            ],
         )
 
         direction = "LONG" if side == "BUY" else "SHORT"
@@ -319,9 +333,9 @@ class TradingEngine:
         if self.order_manager.check_stop_loss(current_price):
             pnl = self.order_manager.execute_stop_loss()
 
-            # Record and notify
+            # Record and notify (track by direction)
             self._record_trade_exit(position, pnl, "STOPPED")
-            self.risk_manager.add_trade_result(pnl)
+            self.risk_manager.add_trade_result(pnl, position.side.value)
 
             await self.telegram.notify_stop_loss(
                 symbol=self.settings.symbol,
@@ -338,9 +352,9 @@ class TradingEngine:
             logger.info(f"Take profit executed: PnL={pnl}")
 
             if not self.order_manager.has_position():
-                # Position fully closed
+                # Position fully closed (track by direction)
                 self._record_trade_exit(position, position.realized_pnl, "TP")
-                self.risk_manager.add_trade_result(position.realized_pnl)
+                self.risk_manager.add_trade_result(position.realized_pnl, position.side.value)
 
                 await self.telegram.notify_trade_closed(
                     symbol=self.settings.symbol,
@@ -437,17 +451,23 @@ class TradingEngine:
         """Send status report (morning/noon/evening)."""
         capital = self._get_capital()
         position_info = self.order_manager.get_position_info()
+        direction_stats = self.risk_manager.get_daily_stats()
 
         await self.report_generator.generate_status_report(
             position_info=position_info,
             capital=capital,
             report_type=report_type,
+            direction_stats=direction_stats,
         )
 
     async def send_daily_report(self) -> None:
         """Send daily report."""
         capital = self._get_capital()
-        await self.report_generator.generate_daily_report(capital)
+        direction_stats = self.risk_manager.get_daily_stats()
+        await self.report_generator.generate_daily_report(
+            capital=capital,
+            direction_stats=direction_stats,
+        )
 
     async def send_weekly_report(self) -> None:
         """Send weekly report."""
