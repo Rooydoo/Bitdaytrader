@@ -101,7 +101,7 @@ class TradingEngine:
 
         # Overfitting check state
         self._last_overfit_check: datetime | None = None
-        self._overfit_check_interval = timedelta(hours=1)  # Check hourly
+        self._overfit_check_interval = timedelta(hours=24)  # Check once daily
 
     async def run_cycle(self) -> None:
         """Run one trading cycle (called every 15 minutes)."""
