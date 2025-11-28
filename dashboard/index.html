@@ -651,10 +651,14 @@
 
     <script>
         let apiUrl = 'http://localhost:8088';
+        let wsUrl = 'ws://localhost:8088/ws';
         let isConnected = false;
         let pnlChart = null;
         let refreshInterval = null;
         let emergencyState = null;
+        let ws = null;
+        let wsReconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
 
         function showToast(message, isError = false) {
             const toast = document.getElementById('toast');
@@ -674,20 +678,25 @@
 
         async function connect() {
             apiUrl = document.getElementById('apiUrl').value;
+
+            // Derive WebSocket URL from API URL
+            wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
+
             try {
+                // First verify API is reachable
                 const response = await fetch(`${apiUrl}/`);
                 const data = await response.json();
 
                 if (data.status === 'running') {
-                    isConnected = true;
-                    document.getElementById('statusDot').classList.add('connected');
-                    document.getElementById('connectionStatus').textContent = '接続中';
-                    showToast('接続成功');
+                    // Connect WebSocket for real-time updates
+                    connectWebSocket();
 
-                    // Start refreshing data
-                    refreshData();
+                    // Initial data load
+                    await refreshData();
+
+                    // Fallback: poll every 30 seconds in case WebSocket disconnects
                     if (refreshInterval) clearInterval(refreshInterval);
-                    refreshInterval = setInterval(refreshData, 10000); // 10秒ごと
+                    refreshInterval = setInterval(refreshData, 30000);
                 }
             } catch (e) {
                 isConnected = false;
@@ -695,6 +704,122 @@
                 document.getElementById('connectionStatus').textContent = '接続失敗';
                 showToast('接続できません: ' + e.message, true);
             }
+        }
+
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                isConnected = true;
+                wsReconnectAttempts = 0;
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('connectionStatus').textContent = 'リアルタイム接続中';
+                showToast('WebSocket接続成功');
+                console.log('WebSocket connected');
+
+                // Send ping every 30 seconds to keep connection alive
+                setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ping' }));
+                    }
+                }, 30000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleWebSocketMessage(message);
+                } catch (e) {
+                    console.error('Error parsing WebSocket message:', e);
+                }
+            };
+
+            ws.onclose = (event) => {
+                console.log('WebSocket closed:', event.code, event.reason);
+                document.getElementById('connectionStatus').textContent = 'WebSocket切断';
+
+                // Attempt to reconnect
+                if (wsReconnectAttempts < maxReconnectAttempts) {
+                    wsReconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+                    console.log(`Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts})`);
+                    setTimeout(connectWebSocket, delay);
+                } else {
+                    document.getElementById('statusDot').classList.remove('connected');
+                    document.getElementById('connectionStatus').textContent = '接続失敗';
+                    showToast('WebSocket再接続失敗', true);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleWebSocketMessage(message) {
+            switch (message.type) {
+                case 'initial_status':
+                case 'status_update':
+                    updateStatusFromWS(message.data);
+                    break;
+
+                case 'trade_opened':
+                    showToast(`新規取引: ${message.data.symbol} ${message.data.side}`);
+                    refreshData(); // Refresh all data for new trade
+                    break;
+
+                case 'trade_closed':
+                    const pnl = message.data.pnl >= 0 ? `+¥${message.data.pnl.toLocaleString()}` : `¥${message.data.pnl.toLocaleString()}`;
+                    showToast(`決済完了: ${message.data.symbol} ${pnl}`, message.data.pnl < 0);
+                    refreshData();
+                    break;
+
+                case 'alert':
+                    showToast(`${message.alert_type}: ${message.message}`, message.severity === 'error');
+                    break;
+
+                case 'pong':
+                    // Heartbeat response, ignore
+                    break;
+
+                default:
+                    console.log('Unknown message type:', message.type);
+            }
+        }
+
+        function updateStatusFromWS(data) {
+            // Update main status
+            if (data.capital !== undefined) {
+                document.getElementById('totalCapital').textContent = formatCurrency(data.capital);
+            }
+            if (data.mode !== undefined) {
+                document.getElementById('modeLabel').textContent = `モード: ${data.mode}${data.conservative_mode ? ' (保守)' : ''}`;
+            }
+            if (data.daily_pnl !== undefined) {
+                const dailyPnlEl = document.getElementById('dailyPnl');
+                dailyPnlEl.textContent = formatCurrency(data.daily_pnl);
+                dailyPnlEl.className = 'card-value ' + (data.daily_pnl >= 0 ? 'positive' : 'negative');
+            }
+            if (data.daily_trades !== undefined) {
+                document.getElementById('dailyTrades').textContent = `取引数: ${data.daily_trades}`;
+            }
+            if (data.emergency_stop) {
+                updateEmergencyPanel(data.emergency_stop);
+            }
+
+            // Update drawdown info if available
+            if (data.drawdown) {
+                updateDrawdownInfo(data.drawdown);
+            }
+        }
+
+        function updateDrawdownInfo(drawdown) {
+            // Could add a drawdown panel in the future
+            console.log('Drawdown:', drawdown);
         }
 
         async function refreshData() {

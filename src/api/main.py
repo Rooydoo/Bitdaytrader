@@ -1,5 +1,7 @@
 """FastAPI backend for web dashboard."""
 
+import asyncio
+import json
 import os
 import time
 from datetime import datetime, timedelta
@@ -8,13 +10,96 @@ from pathlib import Path
 from typing import Any
 
 import psutil
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
 
 from config.settings import get_settings
 from src.settings.runtime import get_runtime_settings
+
+
+class ConnectionManager:
+    """Manages WebSocket connections for real-time updates."""
+
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+        self._broadcast_task: asyncio.Task | None = None
+
+    async def connect(self, websocket: WebSocket):
+        """Accept and register a new WebSocket connection."""
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        """Remove a WebSocket connection."""
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+
+    async def send_personal_message(self, message: dict, websocket: WebSocket):
+        """Send a message to a specific client."""
+        try:
+            await websocket.send_json(message)
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+
+    async def broadcast(self, message: dict):
+        """Broadcast a message to all connected clients."""
+        if not self.active_connections:
+            return
+
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed to send to client: {e}")
+                disconnected.append(connection)
+
+        # Clean up disconnected clients
+        for conn in disconnected:
+            self.disconnect(conn)
+
+    async def broadcast_status_update(self):
+        """Broadcast current status to all clients."""
+        if not self.active_connections:
+            return
+
+        try:
+            status = await _get_full_status()
+            await self.broadcast({
+                "type": "status_update",
+                "data": status,
+                "timestamp": datetime.now().isoformat(),
+            })
+        except Exception as e:
+            logger.error(f"Error broadcasting status: {e}")
+
+    def start_periodic_broadcast(self, interval: float = 5.0):
+        """Start periodic status broadcasts."""
+        if self._broadcast_task is None or self._broadcast_task.done():
+            self._broadcast_task = asyncio.create_task(
+                self._periodic_broadcast_loop(interval)
+            )
+            logger.info(f"Started periodic broadcast (interval: {interval}s)")
+
+    async def _periodic_broadcast_loop(self, interval: float):
+        """Internal loop for periodic broadcasts."""
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                if self.active_connections:
+                    await self.broadcast_status_update()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Broadcast loop error: {e}")
+
+
+# Global WebSocket manager
+ws_manager = ConnectionManager()
 
 # Default API port
 API_PORT = 8088
@@ -439,6 +524,126 @@ async def health_check_simple():
         return {"status": "ok", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# Helper function for WebSocket broadcasts
+async def _get_full_status() -> dict:
+    """Get full status for WebSocket broadcast."""
+    settings = get_settings()
+    rs = get_runtime_settings()
+
+    mode = rs.get("mode", settings.mode)
+
+    # Default values
+    status = {
+        "mode": mode,
+        "is_running": False,
+        "capital": 0.0,
+        "daily_pnl": 0.0,
+        "daily_trades": 0,
+        "conservative_mode": False,
+        "emergency_stop": _emergency_stop.to_dict(),
+        "positions": [],
+        "drawdown": None,
+    }
+
+    if _engine:
+        try:
+            status["is_running"] = True
+            status["capital"] = _engine._get_capital()
+            stats = _engine.risk_manager.get_daily_stats()
+            status["daily_pnl"] = stats["total"]["pnl"]
+            status["daily_trades"] = stats["total"]["trades"]
+            status["conservative_mode"] = _engine.risk_manager.is_conservative_mode
+            status["drawdown"] = stats.get("drawdown")
+
+            # Get long/short stats
+            status["long_stats"] = stats.get("long", {})
+            status["short_stats"] = stats.get("short", {})
+        except Exception as e:
+            logger.error(f"Error getting status: {e}")
+
+    return status
+
+
+# WebSocket endpoint
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time updates."""
+    await ws_manager.connect(websocket)
+
+    # Start periodic broadcasts if not already running
+    ws_manager.start_periodic_broadcast(interval=5.0)
+
+    # Send initial status
+    try:
+        status = await _get_full_status()
+        await ws_manager.send_personal_message({
+            "type": "initial_status",
+            "data": status,
+            "timestamp": datetime.now().isoformat(),
+        }, websocket)
+    except Exception as e:
+        logger.error(f"Error sending initial status: {e}")
+
+    try:
+        while True:
+            # Wait for messages from client
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+
+                # Handle different message types
+                if message.get("type") == "ping":
+                    await ws_manager.send_personal_message({
+                        "type": "pong",
+                        "timestamp": datetime.now().isoformat(),
+                    }, websocket)
+
+                elif message.get("type") == "subscribe":
+                    # Client can subscribe to specific events
+                    await ws_manager.send_personal_message({
+                        "type": "subscribed",
+                        "channel": message.get("channel", "all"),
+                        "timestamp": datetime.now().isoformat(),
+                    }, websocket)
+
+                elif message.get("type") == "request_status":
+                    # Client requests immediate status update
+                    status = await _get_full_status()
+                    await ws_manager.send_personal_message({
+                        "type": "status_update",
+                        "data": status,
+                        "timestamp": datetime.now().isoformat(),
+                    }, websocket)
+
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON received: {data}")
+
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+
+
+# Function to broadcast trade events
+async def broadcast_trade_event(event_type: str, trade_data: dict):
+    """Broadcast a trade event to all connected clients."""
+    await ws_manager.broadcast({
+        "type": event_type,
+        "data": trade_data,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+# Function to broadcast alerts
+async def broadcast_alert(alert_type: str, message: str, severity: str = "info"):
+    """Broadcast an alert to all connected clients."""
+    await ws_manager.broadcast({
+        "type": "alert",
+        "alert_type": alert_type,
+        "message": message,
+        "severity": severity,
+        "timestamp": datetime.now().isoformat(),
+    })
 
 
 @app.get("/api/status", response_model=StatusResponse)
