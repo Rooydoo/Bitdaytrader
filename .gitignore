@@ -92,3 +92,4 @@ Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
+data/runtime_settings.json

@@ -124,19 +124,53 @@ class Settings(BaseSettings):
     short_tp_ratio_3: float = Field(default=0.2, description="Third TP ratio for SHORT")
 
 
-    def get_symbol_allocations(self) -> dict[str, float]:
+    def get_symbol_allocations(self, use_runtime: bool = True) -> dict[str, float]:
         """
         Parse symbols_config and return dict of symbol -> allocation percentage.
 
+        Args:
+            use_runtime: If True, check for runtime overrides first
+
         Example: "BTC_JPY:0.50,ETH_JPY:0.30" -> {"BTC_JPY": 0.50, "ETH_JPY": 0.30}
         """
+        # Check for runtime override
+        config_str = self.symbols_config
+        if use_runtime:
+            try:
+                from src.settings.runtime import get_runtime_settings
+                rs = get_runtime_settings()
+                config_str = rs.get("symbols_config", self.symbols_config)
+            except ImportError:
+                pass  # Runtime settings not available
+
         allocations = {}
-        for item in self.symbols_config.split(","):
+        for item in config_str.split(","):
             item = item.strip()
             if ":" in item:
                 symbol, alloc = item.split(":")
                 allocations[symbol.strip()] = float(alloc.strip())
         return allocations
+
+    def get_effective(self, key: str) -> any:
+        """
+        Get effective value for a setting (runtime override or .env default).
+
+        Args:
+            key: Setting key
+
+        Returns:
+            Effective value
+        """
+        try:
+            from src.settings.runtime import get_runtime_settings
+            rs = get_runtime_settings()
+            override = rs.get(key)
+            if override is not None:
+                return override
+        except ImportError:
+            pass
+
+        return getattr(self, key, None)
 
     def get_capital_for_symbol(self, symbol: str, total_capital: float) -> float:
         """
