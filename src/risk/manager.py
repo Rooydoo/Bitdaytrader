@@ -1,10 +1,58 @@
 """Risk management module with direction-specific settings."""
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from loguru import logger
+
+
+@dataclass
+class DrawdownState:
+    """Tracks drawdown across different time periods."""
+
+    # Peak capital tracking
+    peak_capital: float = 0.0
+    current_capital: float = 0.0
+
+    # Weekly tracking
+    weekly_start_capital: float = 0.0
+    weekly_pnl: float = 0.0
+    week_start_date: date | None = None
+
+    # Monthly tracking
+    monthly_start_capital: float = 0.0
+    monthly_pnl: float = 0.0
+    month_start_date: date | None = None
+
+    # Losing streak tracking
+    consecutive_losses: int = 0
+    max_consecutive_losses: int = 0
+
+    @property
+    def current_drawdown(self) -> float:
+        """Calculate current drawdown from peak (0.0 to 1.0)."""
+        if self.peak_capital <= 0:
+            return 0.0
+        return max(0.0, (self.peak_capital - self.current_capital) / self.peak_capital)
+
+    @property
+    def weekly_drawdown(self) -> float:
+        """Calculate weekly drawdown (0.0 to 1.0)."""
+        if self.weekly_start_capital <= 0:
+            return 0.0
+        if self.weekly_pnl >= 0:
+            return 0.0
+        return abs(self.weekly_pnl) / self.weekly_start_capital
+
+    @property
+    def monthly_drawdown(self) -> float:
+        """Calculate monthly drawdown (0.0 to 1.0)."""
+        if self.monthly_start_capital <= 0:
+            return 0.0
+        if self.monthly_pnl >= 0:
+            return 0.0
+        return abs(self.monthly_pnl) / self.monthly_start_capital
 
 
 @dataclass
@@ -72,7 +120,11 @@ class RiskManager:
         short_tp_levels: list[tuple[float, float]] | None = None,
         # Global settings
         daily_loss_limit: float = 0.03,
+        weekly_loss_limit: float = 0.07,
+        monthly_loss_limit: float = 0.12,
+        max_drawdown_limit: float = 0.15,
         max_daily_trades: int = 5,
+        max_consecutive_losses: int = 5,
     ) -> None:
         """
         Initialize risk manager with direction-specific settings.
@@ -80,8 +132,12 @@ class RiskManager:
         Args:
             long_*: Settings for LONG positions
             short_*: Settings for SHORT positions (stricter defaults)
-            daily_loss_limit: Max daily loss as fraction of capital
+            daily_loss_limit: Max daily loss as fraction of capital (default: 3%)
+            weekly_loss_limit: Max weekly loss as fraction of capital (default: 7%)
+            monthly_loss_limit: Max monthly loss as fraction of capital (default: 12%)
+            max_drawdown_limit: Max drawdown from peak capital (default: 15%)
             max_daily_trades: Max total trades per day
+            max_consecutive_losses: Stop after N consecutive losses (default: 5)
         """
         # LONG configuration
         self.long_config = DirectionConfig(
@@ -105,7 +161,11 @@ class RiskManager:
 
         # Global limits
         self.daily_loss_limit = daily_loss_limit
+        self.weekly_loss_limit = weekly_loss_limit
+        self.monthly_loss_limit = monthly_loss_limit
+        self.max_drawdown_limit = max_drawdown_limit
         self.max_daily_trades = max_daily_trades
+        self.max_consecutive_losses = max_consecutive_losses
 
         # Daily tracking - total
         self._daily_pnl: float = 0.0
@@ -115,6 +175,9 @@ class RiskManager:
         # Daily tracking - by direction
         self._long_stats = DirectionStats()
         self._short_stats = DirectionStats()
+
+        # Drawdown tracking
+        self._drawdown = DrawdownState()
 
         # Conservative mode (activated when overfitting detected)
         self._conservative_mode = False
@@ -376,13 +439,69 @@ class RiskManager:
         if self._last_reset_date != today:
             self.reset_daily()
 
-    def add_trade_result(self, pnl: float, side: str) -> None:
+    def _check_and_reset_weekly(self, capital: float) -> None:
+        """Check if we need to reset weekly counters (Monday)."""
+        today = date.today()
+        # Reset on Monday (weekday() == 0)
+        if self._drawdown.week_start_date is None:
+            self._drawdown.week_start_date = today
+            self._drawdown.weekly_start_capital = capital
+            self._drawdown.weekly_pnl = 0.0
+        elif today.isocalendar()[1] != self._drawdown.week_start_date.isocalendar()[1]:
+            # New week
+            logger.info(
+                f"Weekly reset: Previous week PnL = ¥{self._drawdown.weekly_pnl:,.0f} "
+                f"({self._drawdown.weekly_drawdown:.2%} drawdown)"
+            )
+            self._drawdown.week_start_date = today
+            self._drawdown.weekly_start_capital = capital
+            self._drawdown.weekly_pnl = 0.0
+
+    def _check_and_reset_monthly(self, capital: float) -> None:
+        """Check if we need to reset monthly counters."""
+        today = date.today()
+        if self._drawdown.month_start_date is None:
+            self._drawdown.month_start_date = today
+            self._drawdown.monthly_start_capital = capital
+            self._drawdown.monthly_pnl = 0.0
+        elif today.month != self._drawdown.month_start_date.month:
+            # New month
+            logger.info(
+                f"Monthly reset: Previous month PnL = ¥{self._drawdown.monthly_pnl:,.0f} "
+                f"({self._drawdown.monthly_drawdown:.2%} drawdown)"
+            )
+            self._drawdown.month_start_date = today
+            self._drawdown.monthly_start_capital = capital
+            self._drawdown.monthly_pnl = 0.0
+
+    def update_capital(self, capital: float) -> None:
+        """
+        Update current capital and track peak for drawdown calculation.
+
+        Should be called after each trade or periodically with current account balance.
+
+        Args:
+            capital: Current account capital
+        """
+        self._drawdown.current_capital = capital
+
+        # Update peak if we have new high
+        if capital > self._drawdown.peak_capital:
+            self._drawdown.peak_capital = capital
+            logger.debug(f"New peak capital: ¥{capital:,.0f}")
+
+        # Check weekly/monthly resets
+        self._check_and_reset_weekly(capital)
+        self._check_and_reset_monthly(capital)
+
+    def add_trade_result(self, pnl: float, side: str, capital: float | None = None) -> None:
         """
         Record a trade result.
 
         Args:
             pnl: Profit/loss from the trade
             side: "BUY" (LONG) or "SELL" (SHORT)
+            capital: Current capital after trade (for drawdown tracking)
         """
         self._check_and_reset_daily()
 
@@ -402,13 +521,38 @@ class RiskManager:
         stats.pnl += pnl
         if pnl > 0:
             stats.wins += 1
+            # Reset consecutive losses on win
+            self._drawdown.consecutive_losses = 0
         else:
             stats.losses += 1
+            # Track consecutive losses
+            self._drawdown.consecutive_losses += 1
+            self._drawdown.max_consecutive_losses = max(
+                self._drawdown.max_consecutive_losses,
+                self._drawdown.consecutive_losses
+            )
+
+        # Update weekly/monthly PnL
+        self._drawdown.weekly_pnl += pnl
+        self._drawdown.monthly_pnl += pnl
+
+        # Update capital tracking if provided
+        if capital is not None:
+            self.update_capital(capital)
 
         logger.info(
-            f"{direction} trade recorded: PnL={pnl:.2f}, "
-            f"{direction} stats: trades={stats.trades}, win_rate={stats.win_rate:.1%}, pnl={stats.pnl:.2f}"
+            f"{direction} trade recorded: PnL=¥{pnl:,.0f}, "
+            f"{direction} stats: trades={stats.trades}, win_rate={stats.win_rate:.1%}, pnl=¥{stats.pnl:,.0f}"
         )
+
+        # Log drawdown status if significant
+        if self._drawdown.current_drawdown > 0.05:
+            logger.warning(
+                f"Drawdown alert: {self._drawdown.current_drawdown:.1%} from peak, "
+                f"weekly: {self._drawdown.weekly_drawdown:.1%}, "
+                f"monthly: {self._drawdown.monthly_drawdown:.1%}, "
+                f"consecutive losses: {self._drawdown.consecutive_losses}"
+            )
 
     def check_can_trade(self, capital: float, side: str) -> RiskCheck:
         """
@@ -426,6 +570,34 @@ class RiskManager:
         config = self.get_config(side)
         direction = "LONG" if side == "BUY" else "SHORT"
         stats = self._long_stats if side == "BUY" else self._short_stats
+
+        # Check consecutive losses limit
+        if self._drawdown.consecutive_losses >= self.max_consecutive_losses:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Max consecutive losses reached: {self._drawdown.consecutive_losses} >= {self.max_consecutive_losses}",
+            )
+
+        # Check max drawdown from peak
+        if self._drawdown.current_drawdown >= self.max_drawdown_limit:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Max drawdown limit reached: {self._drawdown.current_drawdown:.2%} >= {self.max_drawdown_limit:.2%}",
+            )
+
+        # Check monthly loss limit
+        if self._drawdown.monthly_drawdown >= self.monthly_loss_limit:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Monthly loss limit reached: {self._drawdown.monthly_drawdown:.2%} >= {self.monthly_loss_limit:.2%}",
+            )
+
+        # Check weekly loss limit
+        if self._drawdown.weekly_drawdown >= self.weekly_loss_limit:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Weekly loss limit reached: {self._drawdown.weekly_drawdown:.2%} >= {self.weekly_loss_limit:.2%}",
+            )
 
         # Check global daily loss limit
         daily_loss_ratio = abs(self._daily_pnl) / capital if capital > 0 else 0
@@ -591,6 +763,25 @@ class RiskManager:
 
         return result
 
+    def get_drawdown_state(self) -> dict:
+        """Get current drawdown tracking state."""
+        return {
+            "peak_capital": self._drawdown.peak_capital,
+            "current_capital": self._drawdown.current_capital,
+            "current_drawdown": self._drawdown.current_drawdown,
+            "weekly_pnl": self._drawdown.weekly_pnl,
+            "weekly_drawdown": self._drawdown.weekly_drawdown,
+            "weekly_limit": self.weekly_loss_limit,
+            "monthly_pnl": self._drawdown.monthly_pnl,
+            "monthly_drawdown": self._drawdown.monthly_drawdown,
+            "monthly_limit": self.monthly_loss_limit,
+            "max_drawdown_limit": self.max_drawdown_limit,
+            "consecutive_losses": self._drawdown.consecutive_losses,
+            "max_consecutive_losses_limit": self.max_consecutive_losses,
+            "week_start_date": self._drawdown.week_start_date.isoformat() if self._drawdown.week_start_date else None,
+            "month_start_date": self._drawdown.month_start_date.isoformat() if self._drawdown.month_start_date else None,
+        }
+
     def get_daily_stats(self) -> dict:
         """Get current daily statistics including direction breakdown."""
         self._check_and_reset_daily()
@@ -614,6 +805,7 @@ class RiskManager:
                 "pnl": self._short_stats.pnl,
                 "win_rate": self._short_stats.win_rate,
             },
+            "drawdown": self.get_drawdown_state(),
         }
 
     def get_direction_performance_summary(self) -> str:
