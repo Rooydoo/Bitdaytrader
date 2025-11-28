@@ -6,7 +6,14 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
-from src.database.models import DailyPnL, DailyPnLRepository, Trade, TradeRepository
+from src.database.models import (
+    DailyPnL,
+    DailyPnLRepository,
+    Trade,
+    TradeRepository,
+    WalkForwardRepository,
+    WalkForwardResult,
+)
 from src.telegram.bot import TelegramBot
 
 
@@ -18,6 +25,7 @@ class ReportGenerator:
         trade_repo: TradeRepository,
         daily_pnl_repo: DailyPnLRepository,
         telegram_bot: TelegramBot,
+        walkforward_repo: WalkForwardRepository | None = None,
     ) -> None:
         """
         Initialize report generator.
@@ -26,10 +34,12 @@ class ReportGenerator:
             trade_repo: Trade repository
             daily_pnl_repo: Daily PnL repository
             telegram_bot: Telegram bot for sending reports
+            walkforward_repo: Walk-forward results repository
         """
         self.trade_repo = trade_repo
         self.daily_pnl_repo = daily_pnl_repo
         self.telegram_bot = telegram_bot
+        self.walkforward_repo = walkforward_repo
 
     async def generate_status_report(
         self,
@@ -281,3 +291,64 @@ class ReportGenerator:
 
         self.daily_pnl_repo.update(trade_date, update_data)
         logger.info(f"Daily PnL updated for {trade_date}")
+
+    async def generate_model_analysis_report(self) -> bool:
+        """
+        Generate and send model analysis report (bi-weekly).
+
+        Returns:
+            True if sent successfully
+        """
+        if not self.walkforward_repo:
+            logger.warning("Walk-forward repository not configured")
+            return False
+
+        latest = self.walkforward_repo.get_latest()
+        if not latest:
+            logger.warning("No walk-forward results available")
+            return False
+
+        # Check for degradation
+        degradation = self.walkforward_repo.check_degradation()
+        warning = degradation.get("reason") if degradation.get("degraded") else None
+
+        return await self.telegram_bot.send_model_analysis_report(
+            model_version=latest.model_version,
+            trained_at=latest.trained_at.strftime("%Y-%m-%d %H:%M"),
+            test_accuracy=latest.test_accuracy_mean or 0,
+            test_auc=latest.test_auc_mean or 0,
+            backtest_win_rate=latest.backtest_win_rate or 0,
+            backtest_return=latest.backtest_return_pct or 0,
+            backtest_sharpe=latest.backtest_sharpe or 0,
+            backtest_max_dd=latest.backtest_max_drawdown or 0,
+            accuracy_gap=latest.accuracy_gap,
+            is_overfit=latest.is_overfit,
+            live_accuracy=latest.live_accuracy,
+            live_predictions=latest.live_predictions,
+            degradation_warning=warning,
+        )
+
+    def get_model_performance_summary(self) -> dict[str, Any]:
+        """
+        Get model performance summary for inclusion in other reports.
+
+        Returns:
+            Dict with model performance metrics
+        """
+        if not self.walkforward_repo:
+            return {}
+
+        latest = self.walkforward_repo.get_latest()
+        if not latest:
+            return {}
+
+        return {
+            "model_version": latest.model_version,
+            "trained_at": latest.trained_at.isoformat() if latest.trained_at else None,
+            "test_accuracy": latest.test_accuracy_mean,
+            "test_auc": latest.test_auc_mean,
+            "backtest_win_rate": latest.backtest_win_rate,
+            "is_overfit": latest.is_overfit,
+            "live_accuracy": latest.live_accuracy,
+            "live_predictions": latest.live_predictions,
+        }

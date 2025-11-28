@@ -392,3 +392,118 @@ class TelegramBot:
 ━━━━━━━━━━━━━━
 """
         return await self.send_message(text.strip())
+
+    async def send_model_analysis_report(
+        self,
+        model_version: str,
+        trained_at: str,
+        test_accuracy: float,
+        test_auc: float,
+        backtest_win_rate: float,
+        backtest_return: float,
+        backtest_sharpe: float,
+        backtest_max_dd: float,
+        accuracy_gap: float | None = None,
+        is_overfit: bool = False,
+        live_accuracy: float | None = None,
+        live_predictions: int = 0,
+        degradation_warning: str | None = None,
+    ) -> bool:
+        """
+        Send model analysis report (bi-weekly walk-forward analysis).
+
+        Args:
+            model_version: Model version string
+            trained_at: Training timestamp
+            test_accuracy: Out-of-sample accuracy
+            test_auc: Out-of-sample AUC
+            backtest_win_rate: Backtest win rate
+            backtest_return: Backtest return percentage
+            backtest_sharpe: Backtest Sharpe ratio
+            backtest_max_dd: Backtest max drawdown
+            accuracy_gap: Train-test accuracy gap (overfitting indicator)
+            is_overfit: Whether model is flagged as overfit
+            live_accuracy: Live trading accuracy
+            live_predictions: Number of live predictions
+            degradation_warning: Warning message if performance degraded
+        """
+        # Overfitting status
+        overfit_emoji = "⚠️" if is_overfit else "✅"
+        overfit_status = "過学習の疑い" if is_overfit else "正常"
+
+        # Live performance
+        live_text = ""
+        if live_predictions > 0 and live_accuracy is not None:
+            live_text = f"""
+🔴 ライブ実績:
+  • 予測数: {live_predictions}回
+  • 的中率: {live_accuracy:.1%}
+"""
+
+        # Degradation warning
+        warning_text = ""
+        if degradation_warning:
+            warning_text = f"""
+⚠️ <b>警告:</b>
+{degradation_warning}
+"""
+
+        # Gap indicator
+        gap_text = ""
+        if accuracy_gap is not None:
+            gap_text = f"  • 精度ギャップ: {accuracy_gap:.1%} (train - test)"
+
+        return_sign = "+" if backtest_return >= 0 else ""
+
+        text = f"""
+🤖 <b>モデル分析レポート</b>
+━━━━━━━━━━━━━━
+
+📋 モデル情報:
+  • バージョン: {model_version}
+  • 訓練日時: {trained_at}
+
+📊 ウォークフォワード検証:
+  • テスト精度: {test_accuracy:.1%}
+  • テストAUC: {test_auc:.3f}
+{gap_text}
+
+{overfit_emoji} 過学習チェック: {overfit_status}
+
+📈 バックテスト結果:
+  • 勝率: {backtest_win_rate:.1%}
+  • リターン: {return_sign}{backtest_return:.2%}
+  • シャープ: {backtest_sharpe:.2f}
+  • 最大DD: {backtest_max_dd:.2%}
+{live_text}{warning_text}
+━━━━━━━━━━━━━━
+"""
+        return await self.send_message(text.strip())
+
+    async def send_retraining_notification(
+        self,
+        reason: str,
+        old_accuracy: float | None = None,
+        new_accuracy: float | None = None,
+        improvement: float | None = None,
+    ) -> bool:
+        """Send notification about model retraining."""
+        improvement_text = ""
+        if improvement is not None:
+            imp_sign = "+" if improvement >= 0 else ""
+            improvement_text = f"""
+📈 改善:
+  • 旧精度: {old_accuracy:.1%}
+  • 新精度: {new_accuracy:.1%}
+  • 変化: {imp_sign}{improvement:.1%}
+"""
+
+        text = f"""
+🔄 <b>モデル再訓練完了</b>
+━━━━━━━━━━━━━━
+
+📋 理由: {reason}
+{improvement_text}
+━━━━━━━━━━━━━━
+"""
+        return await self.send_message(text.strip())

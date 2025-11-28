@@ -14,6 +14,7 @@ from src.database.models import (
     Signal,
     Trade,
     TradeRepository,
+    WalkForwardRepository,
     init_db,
 )
 from src.execution.order_manager import OrderManager, PositionStatus
@@ -40,6 +41,7 @@ class TradingEngine:
         self.session = init_db(settings.db_path)
         self.trade_repo = TradeRepository(self.session)
         self.daily_pnl_repo = DailyPnLRepository(self.session)
+        self.walkforward_repo = WalkForwardRepository(self.session)
 
         # Initialize API client
         self.client = GMOCoinClient(
@@ -90,6 +92,7 @@ class TradingEngine:
             trade_repo=self.trade_repo,
             daily_pnl_repo=self.daily_pnl_repo,
             telegram_bot=self.telegram,
+            walkforward_repo=self.walkforward_repo,
         )
 
         # Cache for OHLCV data
@@ -478,6 +481,10 @@ class TradingEngine:
         """Send monthly report."""
         capital = self._get_capital()
         await self.report_generator.generate_monthly_report(capital)
+
+    async def send_model_analysis_report(self) -> None:
+        """Send model analysis report (bi-weekly walk-forward analysis)."""
+        await self.report_generator.generate_model_analysis_report()
 
     def close(self) -> None:
         """Clean up resources."""

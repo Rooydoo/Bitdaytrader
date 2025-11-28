@@ -55,6 +55,15 @@ async def main() -> None:
         if now.weekday() == settings.report_weekly_day and hour == settings.report_morning_hour:
             await engine.send_weekly_report()
 
+        # Bi-weekly model analysis report (every other Monday 8:00)
+        # Based on ISO week number: send on even weeks
+        if (
+            now.weekday() == settings.report_weekly_day
+            and hour == settings.report_morning_hour
+            and now.isocalendar()[1] % 2 == 0
+        ):
+            await engine.send_model_analysis_report()
+
         # Monthly report (1st of month, 8:00)
         if now.day == settings.report_monthly_day and hour == settings.report_morning_hour:
             await engine.send_monthly_report()

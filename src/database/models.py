@@ -96,6 +96,50 @@ class ModelPerformance(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class WalkForwardResult(Base):
+    """Walk-forward validation results table."""
+
+    __tablename__ = "walkforward_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trained_at = Column(DateTime, nullable=False)
+    model_version = Column(String(50), nullable=False)
+
+    # Training metrics (in-sample)
+    train_accuracy = Column(Float, nullable=True)
+    train_auc = Column(Float, nullable=True)
+    train_precision = Column(Float, nullable=True)
+    train_recall = Column(Float, nullable=True)
+
+    # Walk-forward test metrics (out-of-sample average)
+    test_accuracy_mean = Column(Float, nullable=True)
+    test_accuracy_std = Column(Float, nullable=True)
+    test_auc_mean = Column(Float, nullable=True)
+    test_auc_std = Column(Float, nullable=True)
+    test_precision_mean = Column(Float, nullable=True)
+    test_recall_mean = Column(Float, nullable=True)
+
+    # Backtest results
+    backtest_trades = Column(Integer, nullable=True)
+    backtest_win_rate = Column(Float, nullable=True)
+    backtest_return_pct = Column(Float, nullable=True)
+    backtest_sharpe = Column(Float, nullable=True)
+    backtest_max_drawdown = Column(Float, nullable=True)
+
+    # Overfitting indicators
+    accuracy_gap = Column(Float, nullable=True)  # train - test (high = overfitting)
+    auc_gap = Column(Float, nullable=True)  # train - test (high = overfitting)
+    is_overfit = Column(Boolean, default=False)  # True if gap > threshold
+
+    # Live performance tracking
+    live_predictions = Column(Integer, default=0)
+    live_correct = Column(Integer, default=0)
+    live_accuracy = Column(Float, nullable=True)
+
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # Database initialization
 _engine = None
 _SessionLocal = None
@@ -234,3 +278,137 @@ class DailyPnLRepository:
             .limit(n)
             .all()
         )
+
+
+class WalkForwardRepository:
+    """Repository for walk-forward validation results."""
+
+    def __init__(self, session: Session) -> None:
+        """Initialize repository."""
+        self.session = session
+
+    def save_result(
+        self,
+        model_version: str,
+        walkforward_metrics: dict[str, Any],
+        backtest_results: dict[str, Any],
+        train_metrics: dict[str, Any] | None = None,
+    ) -> WalkForwardResult:
+        """
+        Save walk-forward validation result.
+
+        Args:
+            model_version: Model version identifier
+            walkforward_metrics: Walk-forward test metrics
+            backtest_results: Backtest results
+            train_metrics: Optional training (in-sample) metrics
+        """
+        # Calculate overfitting indicators
+        train_acc = train_metrics.get("accuracy", 0) if train_metrics else 0
+        test_acc = walkforward_metrics.get("accuracy_mean", 0)
+        train_auc = train_metrics.get("auc", 0) if train_metrics else 0
+        test_auc = walkforward_metrics.get("auc_mean", 0)
+
+        accuracy_gap = train_acc - test_acc
+        auc_gap = train_auc - test_auc
+
+        # Flag as overfit if gap > 10% or AUC gap > 0.1
+        is_overfit = accuracy_gap > 0.10 or auc_gap > 0.10
+
+        result = WalkForwardResult(
+            trained_at=datetime.utcnow(),
+            model_version=model_version,
+            # Training metrics
+            train_accuracy=train_metrics.get("accuracy") if train_metrics else None,
+            train_auc=train_metrics.get("auc") if train_metrics else None,
+            train_precision=train_metrics.get("precision") if train_metrics else None,
+            train_recall=train_metrics.get("recall") if train_metrics else None,
+            # Walk-forward test metrics
+            test_accuracy_mean=walkforward_metrics.get("accuracy_mean"),
+            test_accuracy_std=walkforward_metrics.get("accuracy_std"),
+            test_auc_mean=walkforward_metrics.get("auc_mean"),
+            test_auc_std=walkforward_metrics.get("auc_std"),
+            test_precision_mean=walkforward_metrics.get("precision_mean"),
+            test_recall_mean=walkforward_metrics.get("recall_mean"),
+            # Backtest results
+            backtest_trades=backtest_results.get("total_trades"),
+            backtest_win_rate=backtest_results.get("win_rate"),
+            backtest_return_pct=backtest_results.get("return_pct"),
+            backtest_sharpe=backtest_results.get("sharpe_ratio"),
+            backtest_max_drawdown=backtest_results.get("max_drawdown"),
+            # Overfitting indicators
+            accuracy_gap=accuracy_gap,
+            auc_gap=auc_gap,
+            is_overfit=is_overfit,
+        )
+
+        self.session.add(result)
+        self.session.commit()
+        return result
+
+    def get_latest(self) -> WalkForwardResult | None:
+        """Get the most recent walk-forward result."""
+        return (
+            self.session.query(WalkForwardResult)
+            .order_by(WalkForwardResult.trained_at.desc())
+            .first()
+        )
+
+    def get_history(self, limit: int = 10) -> list[WalkForwardResult]:
+        """Get walk-forward result history."""
+        return (
+            self.session.query(WalkForwardResult)
+            .order_by(WalkForwardResult.trained_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def update_live_performance(
+        self,
+        result_id: int,
+        predictions: int,
+        correct: int,
+    ) -> WalkForwardResult | None:
+        """Update live performance tracking for a model."""
+        result = self.session.query(WalkForwardResult).filter(
+            WalkForwardResult.id == result_id
+        ).first()
+        if result:
+            result.live_predictions = predictions
+            result.live_correct = correct
+            result.live_accuracy = correct / predictions if predictions > 0 else None
+            self.session.commit()
+        return result
+
+    def check_degradation(self, threshold: float = 0.10) -> dict[str, Any]:
+        """
+        Check if model performance has degraded.
+
+        Returns:
+            Dict with degradation status and details
+        """
+        latest = self.get_latest()
+        if not latest:
+            return {"degraded": False, "reason": "No model data"}
+
+        # Check if live accuracy is significantly below test accuracy
+        if latest.live_predictions and latest.live_predictions >= 20:
+            if latest.live_accuracy and latest.test_accuracy_mean:
+                gap = latest.test_accuracy_mean - latest.live_accuracy
+                if gap > threshold:
+                    return {
+                        "degraded": True,
+                        "reason": f"Live accuracy ({latest.live_accuracy:.1%}) below "
+                                  f"test accuracy ({latest.test_accuracy_mean:.1%})",
+                        "gap": gap,
+                    }
+
+        # Check if model was flagged as overfit
+        if latest.is_overfit:
+            return {
+                "degraded": True,
+                "reason": f"Model shows overfitting (accuracy gap: {latest.accuracy_gap:.1%})",
+                "gap": latest.accuracy_gap,
+            }
+
+        return {"degraded": False, "reason": "Model performance stable"}
