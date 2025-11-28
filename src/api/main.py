@@ -301,12 +301,28 @@ def get_emergency_stop() -> EmergencyStopState:
     """Get global emergency stop state."""
     return _emergency_stop
 
-# Allow CORS for local development
+# CORS configuration - restrict origins based on settings
+_settings = get_settings()
+_cors_origins_str = _settings.cors_origins
+
+# Parse CORS origins from settings
+if _cors_origins_str == "*":
+    # Allow all origins (development only)
+    _cors_origins = ["*"]
+    logger.warning("CORS is set to allow all origins. This should only be used in development!")
+else:
+    # Parse comma-separated origins
+    _cors_origins = [origin.strip() for origin in _cors_origins_str.split(",") if origin.strip()]
+    if not _cors_origins:
+        # Default to localhost if not configured
+        _cors_origins = ["http://localhost:8088", "http://127.0.0.1:8088"]
+    logger.info(f"CORS allowed origins: {_cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -430,8 +446,8 @@ async def health_check():
 
     # Check 1: Database connectivity
     try:
-        from src.database.session import SessionLocal
-        db = SessionLocal()
+        from src.database.models import get_session
+        db = get_session()
         db.execute("SELECT 1")
         db.close()
         checks["database"] = {"status": "ok", "message": "Database connection successful"}
@@ -1436,14 +1452,81 @@ async def _close_all_positions():
     if not _engine:
         return
 
+    closed_positions = []
+    errors = []
+
     try:
+        # Get all unique symbols from open trades
         open_trades = _engine.trade_repo.get_open_trades()
+        symbols = list(set(t.symbol for t in open_trades))
+
+        # Close positions via GMO API for each symbol
+        for symbol in symbols:
+            try:
+                orders = _engine.client.close_all_positions(symbol)
+                for order in orders:
+                    closed_positions.append({
+                        "symbol": symbol,
+                        "order_id": order.order_id,
+                        "side": order.side,
+                        "size": order.size,
+                    })
+                    logger.info(f"Emergency closed: {symbol} {order.side} {order.size}")
+            except Exception as e:
+                logger.error(f"Failed to close positions for {symbol}: {e}")
+                errors.append({"symbol": symbol, "error": str(e)})
+
+        # Update trade records in database
         for trade in open_trades:
-            logger.info(f"Emergency closing position: {trade.symbol} {trade.side}")
-            # This would need to be implemented in the engine
-            # For now, we just log the intent
+            try:
+                # Get current price for PnL calculation
+                ticker = _engine.client.get_ticker(trade.symbol)
+                exit_price = ticker.bid if trade.side == "LONG" else ticker.ask
+
+                # Calculate PnL
+                if trade.side == "LONG":
+                    pnl = (exit_price - trade.entry_price) * trade.size
+                else:
+                    pnl = (trade.entry_price - exit_price) * trade.size
+
+                # Update trade record
+                _engine.trade_repo.update(trade.id, {
+                    "exit_price": exit_price,
+                    "exit_time": datetime.now(),
+                    "pnl": pnl,
+                    "status": "STOPPED",  # Mark as stopped (emergency close)
+                    "notes": f"Emergency stop: {_emergency_stop.reason.value if _emergency_stop.reason else 'manual'}",
+                })
+                logger.info(f"Updated trade {trade.id}: exit_price={exit_price}, pnl={pnl:.2f}")
+
+            except Exception as e:
+                logger.error(f"Failed to update trade record {trade.id}: {e}")
+                errors.append({"trade_id": trade.id, "error": str(e)})
+
+        # Also close paper trading positions if in paper mode
+        if _engine.paper_executor:
+            paper_positions = _engine.paper_executor.get_open_positions()
+            for pos in paper_positions:
+                try:
+                    ticker = _engine.client.get_ticker(pos.symbol)
+                    exit_price = ticker.bid if pos.side.value == "LONG" else ticker.ask
+                    _engine.paper_executor.close_position(
+                        position_id=pos.position_id,
+                        exit_price=exit_price,
+                        reason="EMERGENCY_STOP",
+                    )
+                    logger.info(f"Emergency closed paper position: {pos.position_id} {pos.symbol} {pos.side.value}")
+                except Exception as e:
+                    logger.error(f"Failed to close paper position {pos.position_id}: {e}")
+
+        # Log summary
+        if closed_positions:
+            logger.warning(f"Emergency close completed: {len(closed_positions)} positions closed")
+        if errors:
+            logger.error(f"Emergency close had {len(errors)} errors")
+
     except Exception as e:
-        logger.error(f"Error closing positions: {e}")
+        logger.error(f"Error during emergency close: {e}")
 
 
 async def _send_emergency_alert(message: str):

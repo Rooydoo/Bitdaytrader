@@ -562,8 +562,22 @@ class TradingEngine:
     def _record_paper_trade_exit(self, position_id: str, pnl: float, status: str) -> None:
         """Record paper trade exit to database."""
         # Find open paper trade by position ID
-        # Note: In a real implementation, we'd store position_id in the Trade model
         trades = self.trade_repo.get_open_trades()
+        for trade in trades:
+            # Match by paper_position_id for precise tracking
+            if trade.is_paper and trade.paper_position_id == position_id:
+                self.trade_repo.update(
+                    trade.id,
+                    {
+                        "pnl": pnl,
+                        "exit_time": datetime.now(),
+                        "status": status,
+                    },
+                )
+                logger.debug(f"Paper trade exit recorded: position_id={position_id}, pnl={pnl:.2f}")
+                return
+
+        # Fallback: match by symbol if position_id not found (legacy trades)
         for trade in trades:
             if trade.is_paper and trade.symbol == self.settings.symbol:
                 self.trade_repo.update(
@@ -574,7 +588,10 @@ class TradingEngine:
                         "status": status,
                     },
                 )
-                break
+                logger.warning(f"Paper trade exit matched by symbol (legacy): {trade.symbol}")
+                return
+
+        logger.warning(f"No matching paper trade found for position_id={position_id}")
 
     def _calculate_current_atr(self, df: pd.DataFrame, period: int = 14) -> float | None:
         """Calculate current ATR value."""
@@ -625,6 +642,7 @@ class TradingEngine:
             entry_time=paper_pos.entry_time,
             confidence=paper_pos.confidence,
             is_paper=True,  # Mark as paper trade
+            paper_position_id=paper_pos.position_id,  # Store position ID for precise tracking
         )
         self.session.add(trade)
         self.session.commit()

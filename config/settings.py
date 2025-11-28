@@ -107,6 +107,16 @@ class Settings(BaseSettings):
         default="paper", description="Execution mode"
     )
 
+    # API Security
+    cors_origins: str = Field(
+        default="http://localhost:8088,http://127.0.0.1:8088",
+        description="Allowed CORS origins (comma-separated). Use '*' for development only."
+    )
+    api_rate_limit: int = Field(
+        default=100,
+        description="API rate limit per minute"
+    )
+
     # Take Profit Levels - LONG (R multiples, can let profits run)
     long_tp_level_1: float = Field(default=1.5, description="First TP level for LONG (R)")
     long_tp_ratio_1: float = Field(default=0.5, description="First TP ratio for LONG")

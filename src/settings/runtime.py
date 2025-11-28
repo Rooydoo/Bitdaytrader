@@ -144,6 +144,31 @@ class RuntimeSettings:
             if not 0 <= value <= 1:
                 return False, f"{key} must be between 0 and 1 (got {value})"
 
+        # Safety limits for risk per trade (max 5%)
+        if key in ["long_risk_per_trade", "short_risk_per_trade"]:
+            if value > 0.05:
+                return False, f"{key} exceeds safety limit of 5% (got {value:.1%})"
+
+        # Safety limits for max position size (max 30%)
+        if key in ["long_max_position_size", "short_max_position_size"]:
+            if value > 0.30:
+                return False, f"{key} exceeds safety limit of 30% (got {value:.1%})"
+
+        # Safety limit for daily loss (max 10%)
+        if key == "daily_loss_limit":
+            if value > 0.10:
+                return False, f"daily_loss_limit exceeds safety limit of 10% (got {value:.1%})"
+
+        # Minimum confidence threshold (at least 50%)
+        if key in ["long_confidence_threshold", "short_confidence_threshold"]:
+            if value < 0.50:
+                return False, f"{key} below safety minimum of 50% (got {value:.1%})"
+
+        # Capital utilization limits (max 80%)
+        if key == "total_capital_utilization":
+            if value > 0.80:
+                return False, f"total_capital_utilization exceeds safety limit of 80% (got {value:.1%})"
+
         # LONG/SHORT ratio should sum to 1
         if key == "long_allocation_ratio":
             short_ratio = self._overrides.get("short_allocation_ratio", 0.4)
@@ -169,11 +194,20 @@ class RuntimeSettings:
         if key == "symbols_config":
             try:
                 total = 0
-                for item in value.split(","):
+                items = value.split(",")
+                if not items or not any(":" in item for item in items):
+                    return False, "symbols_config must contain at least one 'SYMBOL:allocation' pair"
+                for item in items:
                     item = item.strip()
                     if ":" in item:
-                        _, alloc = item.split(":")
-                        total += float(alloc.strip())
+                        symbol, alloc = item.split(":")
+                        symbol = symbol.strip()
+                        alloc_val = float(alloc.strip())
+                        if not symbol:
+                            return False, "Symbol name cannot be empty"
+                        if alloc_val <= 0:
+                            return False, f"Allocation for {symbol} must be positive"
+                        total += alloc_val
                 if total > 1:
                     return False, f"Symbol allocations exceed 100% (total: {total:.0%})"
             except Exception as e:

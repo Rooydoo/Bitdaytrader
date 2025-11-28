@@ -42,6 +42,7 @@ class Trade(Base):
     confidence = Column(Float, nullable=True)
     notes = Column(Text, nullable=True)
     is_paper = Column(Boolean, default=False)  # True for paper trading
+    paper_position_id = Column(String(50), nullable=True)  # Paper trading position ID for precise tracking
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
