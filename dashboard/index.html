@@ -456,12 +456,37 @@
                         <strong id="emergencyStatusText">通常稼働中</strong>
                     </div>
                     <div class="emergency-buttons">
-                        <button class="btn btn-warning" onclick="emergencyStop('no_new_positions')">新規停止</button>
+                        <button class="btn btn-warning" onclick="emergencyStop('no_new_positions')">全停止</button>
                         <button class="btn btn-danger" onclick="emergencyStop('full_stop')">緊急停止</button>
-                        <button class="btn btn-primary" onclick="resumeTrading()" id="resumeBtn" style="display: none;">再開</button>
+                        <button class="btn btn-primary" onclick="resumeTrading()" id="resumeBtn" style="display: none;">全再開</button>
                     </div>
                 </div>
-                <div class="emergency-info" id="emergencyInfo">
+                <!-- Direction-specific controls -->
+                <div style="display: flex; gap: 20px; margin-top: 15px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <span class="emergency-indicator" id="longIndicator"></span>
+                            <strong>LONG:</strong>
+                            <span id="longStatusText">稼働中</span>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-warning" style="padding: 6px 12px; font-size: 12px;" onclick="stopDirection('long')" id="stopLongBtn">停止</button>
+                            <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; display: none;" onclick="resumeDirection('long')" id="resumeLongBtn">再開</button>
+                        </div>
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <span class="emergency-indicator" id="shortIndicator"></span>
+                            <strong>SHORT:</strong>
+                            <span id="shortStatusText">稼働中</span>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-warning" style="padding: 6px 12px; font-size: 12px;" onclick="stopDirection('short')" id="stopShortBtn">停止</button>
+                            <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; display: none;" onclick="resumeDirection('short')" id="resumeShortBtn">再開</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="emergency-info" id="emergencyInfo" style="margin-top: 10px;">
                     取引は正常に行われています
                 </div>
             </div>
@@ -732,7 +757,8 @@
             const info = document.getElementById('emergencyInfo');
             const resumeBtn = document.getElementById('resumeBtn');
 
-            if (emergency.is_active) {
+            // Global status
+            if (emergency.mode !== 'none') {
                 panel.classList.add('active');
                 indicator.classList.add('stopped');
                 resumeBtn.style.display = 'inline-block';
@@ -750,6 +776,18 @@
                     const resumeTime = new Date(emergency.auto_resume_at).toLocaleString('ja-JP');
                     info.textContent += ` (自動再開: ${resumeTime})`;
                 }
+            } else if (emergency.long_stopped || emergency.short_stopped) {
+                // Only direction-specific stops
+                panel.classList.add('active');
+                indicator.classList.remove('stopped');
+                resumeBtn.style.display = 'none';
+
+                let stoppedDirs = [];
+                if (emergency.long_stopped) stoppedDirs.push('LONG');
+                if (emergency.short_stopped) stoppedDirs.push('SHORT');
+                statusText.textContent = `${stoppedDirs.join('/')}停止中`;
+                info.textContent = '一部の取引方向が停止されています';
+                info.classList.add('warning');
             } else {
                 panel.classList.remove('active');
                 indicator.classList.remove('stopped');
@@ -757,6 +795,46 @@
                 info.textContent = '取引は正常に行われています';
                 info.classList.remove('warning');
                 resumeBtn.style.display = 'none';
+            }
+
+            // Update LONG status
+            const longIndicator = document.getElementById('longIndicator');
+            const longStatusText = document.getElementById('longStatusText');
+            const stopLongBtn = document.getElementById('stopLongBtn');
+            const resumeLongBtn = document.getElementById('resumeLongBtn');
+
+            if (emergency.long_stopped || !emergency.can_open_long) {
+                longIndicator.classList.add('stopped');
+                longStatusText.textContent = emergency.long_stop_reason || '停止中';
+                longStatusText.style.color = 'var(--accent-red)';
+                stopLongBtn.style.display = 'none';
+                resumeLongBtn.style.display = emergency.mode === 'none' ? 'inline-block' : 'none';
+            } else {
+                longIndicator.classList.remove('stopped');
+                longStatusText.textContent = '稼働中';
+                longStatusText.style.color = 'var(--accent-green)';
+                stopLongBtn.style.display = 'inline-block';
+                resumeLongBtn.style.display = 'none';
+            }
+
+            // Update SHORT status
+            const shortIndicator = document.getElementById('shortIndicator');
+            const shortStatusText = document.getElementById('shortStatusText');
+            const stopShortBtn = document.getElementById('stopShortBtn');
+            const resumeShortBtn = document.getElementById('resumeShortBtn');
+
+            if (emergency.short_stopped || !emergency.can_open_short) {
+                shortIndicator.classList.add('stopped');
+                shortStatusText.textContent = emergency.short_stop_reason || '停止中';
+                shortStatusText.style.color = 'var(--accent-red)';
+                stopShortBtn.style.display = 'none';
+                resumeShortBtn.style.display = emergency.mode === 'none' ? 'inline-block' : 'none';
+            } else {
+                shortIndicator.classList.remove('stopped');
+                shortStatusText.textContent = '稼働中';
+                shortStatusText.style.color = 'var(--accent-green)';
+                stopShortBtn.style.display = 'inline-block';
+                resumeShortBtn.style.display = 'none';
             }
         }
 
@@ -814,6 +892,64 @@
 
                 if (data.success) {
                     showToast('取引を再開しました');
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        async function stopDirection(direction) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            const dirText = direction.toUpperCase();
+            if (!confirm(`${dirText}取引を停止しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/stop/${direction}?reason=ダッシュボードから手動停止`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${dirText}取引を停止しました`);
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        async function resumeDirection(direction) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            const dirText = direction.toUpperCase();
+            if (!confirm(`${dirText}取引を再開しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/resume/${direction}`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${dirText}取引を再開しました`);
                     updateEmergencyPanel(data.status);
                 } else {
                     showToast(`エラー: ${data.message}`, true);

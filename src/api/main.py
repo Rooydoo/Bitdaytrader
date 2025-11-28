@@ -48,6 +48,11 @@ class EmergencyStopState:
         self.triggered_at: datetime | None = None
         self.message: str = ""
         self.auto_resume_at: datetime | None = None
+        # Direction-specific stops
+        self.long_stopped: bool = False
+        self.short_stopped: bool = False
+        self.long_stop_reason: str = ""
+        self.short_stop_reason: str = ""
 
     def activate(
         self,
@@ -65,6 +70,11 @@ class EmergencyStopState:
         if auto_resume_hours:
             self.auto_resume_at = datetime.now() + timedelta(hours=auto_resume_hours)
 
+        # Full stop affects both directions
+        if mode in [EmergencyStopMode.FULL_STOP, EmergencyStopMode.NO_NEW_POSITIONS]:
+            self.long_stopped = True
+            self.short_stopped = True
+
         logger.warning(
             f"EMERGENCY STOP ACTIVATED: mode={mode.value}, reason={reason.value}, "
             f"message={message}"
@@ -78,6 +88,36 @@ class EmergencyStopState:
         self.triggered_at = None
         self.message = ""
         self.auto_resume_at = None
+        self.long_stopped = False
+        self.short_stopped = False
+        self.long_stop_reason = ""
+        self.short_stop_reason = ""
+
+    def stop_direction(self, direction: str, reason: str = "手動停止") -> None:
+        """Stop a specific direction (LONG or SHORT)."""
+        if direction.upper() == "LONG":
+            self.long_stopped = True
+            self.long_stop_reason = reason
+            logger.warning(f"LONG trading stopped: {reason}")
+        elif direction.upper() == "SHORT":
+            self.short_stopped = True
+            self.short_stop_reason = reason
+            logger.warning(f"SHORT trading stopped: {reason}")
+
+    def resume_direction(self, direction: str) -> None:
+        """Resume a specific direction (LONG or SHORT)."""
+        if direction.upper() == "LONG":
+            self.long_stopped = False
+            self.long_stop_reason = ""
+            logger.info("LONG trading resumed")
+        elif direction.upper() == "SHORT":
+            self.short_stopped = False
+            self.short_stop_reason = ""
+            logger.info("SHORT trading resumed")
+
+        # If both directions resumed and no global stop, clear mode
+        if not self.long_stopped and not self.short_stopped and self.mode == EmergencyStopMode.NONE:
+            pass  # Already clear
 
     def check_auto_resume(self) -> bool:
         """Check if auto-resume time has passed."""
@@ -89,12 +129,22 @@ class EmergencyStopState:
     def is_active(self) -> bool:
         """Check if any emergency stop is active."""
         self.check_auto_resume()
-        return self.mode != EmergencyStopMode.NONE
+        return self.mode != EmergencyStopMode.NONE or self.long_stopped or self.short_stopped
 
     def can_open_positions(self) -> bool:
-        """Check if new positions can be opened."""
+        """Check if new positions can be opened (any direction)."""
         self.check_auto_resume()
-        return self.mode == EmergencyStopMode.NONE
+        return self.mode == EmergencyStopMode.NONE and not self.long_stopped and not self.short_stopped
+
+    def can_open_long(self) -> bool:
+        """Check if LONG positions can be opened."""
+        self.check_auto_resume()
+        return self.mode == EmergencyStopMode.NONE and not self.long_stopped
+
+    def can_open_short(self) -> bool:
+        """Check if SHORT positions can be opened."""
+        self.check_auto_resume()
+        return self.mode == EmergencyStopMode.NONE and not self.short_stopped
 
     def should_close_all(self) -> bool:
         """Check if all positions should be closed."""
@@ -110,6 +160,12 @@ class EmergencyStopState:
             "auto_resume_at": self.auto_resume_at.isoformat() if self.auto_resume_at else None,
             "is_active": self.is_active(),
             "can_open_positions": self.can_open_positions(),
+            "long_stopped": self.long_stopped,
+            "short_stopped": self.short_stopped,
+            "long_stop_reason": self.long_stop_reason,
+            "short_stop_reason": self.short_stop_reason,
+            "can_open_long": self.can_open_long(),
+            "can_open_short": self.can_open_short(),
         }
 
 
@@ -672,6 +728,76 @@ async def deactivate_emergency_stop():
     return {
         "success": True,
         "message": "Emergency stop deactivated, trading resumed",
+        "status": _emergency_stop.to_dict(),
+    }
+
+
+# Direction-specific stop/resume endpoints
+@app.post("/api/emergency/stop/{direction}")
+async def stop_direction(direction: str, reason: str = "手動停止"):
+    """
+    Stop a specific direction (LONG or SHORT).
+
+    Args:
+        direction: "long" or "short"
+        reason: Reason for stopping
+    """
+    direction = direction.upper()
+    if direction not in ["LONG", "SHORT"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid direction. Use 'long' or 'short'"
+        )
+
+    _emergency_stop.stop_direction(direction, reason)
+
+    # Send Telegram alert
+    await _send_emergency_alert(
+        f"🛑 {direction}取引を停止\n理由: {reason}"
+    )
+
+    return {
+        "success": True,
+        "message": f"{direction} trading stopped",
+        "status": _emergency_stop.to_dict(),
+    }
+
+
+@app.post("/api/emergency/resume/{direction}")
+async def resume_direction(direction: str):
+    """
+    Resume a specific direction (LONG or SHORT).
+
+    Args:
+        direction: "long" or "short"
+    """
+    direction = direction.upper()
+    if direction not in ["LONG", "SHORT"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid direction. Use 'long' or 'short'"
+        )
+
+    # Check if this direction is actually stopped
+    if direction == "LONG" and not _emergency_stop.long_stopped:
+        return {
+            "success": False,
+            "message": "LONG trading is not stopped",
+        }
+    if direction == "SHORT" and not _emergency_stop.short_stopped:
+        return {
+            "success": False,
+            "message": "SHORT trading is not stopped",
+        }
+
+    _emergency_stop.resume_direction(direction)
+
+    # Send Telegram alert
+    await _send_emergency_alert(f"✅ {direction}取引を再開")
+
+    return {
+        "success": True,
+        "message": f"{direction} trading resumed",
         "status": _emergency_stop.to_dict(),
     }
 

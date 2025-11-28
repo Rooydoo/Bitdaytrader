@@ -65,6 +65,12 @@ class TelegramCommandHandler:
 /fullstop - 緊急停止（全決済）
 /resume - 取引を再開
 
+<b>方向別停止:</b>
+/stoplong - LONGのみ停止
+/stopshort - SHORTのみ停止
+/resumelong - LONG再開
+/resumeshort - SHORT再開
+
 <b>レポート:</b>
 /report - 本日のレポート
 /weekly - 週次レポート
@@ -350,6 +356,104 @@ class TelegramCommandHandler:
             logger.error(f"Error resuming trading: {e}")
             await update.message.reply_text(f"エラー: {e}")
 
+    async def stoplong(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /stoplong command - stop LONG positions only."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop
+
+            emergency = get_emergency_stop()
+            emergency.stop_direction("LONG", "Telegramから手動停止")
+
+            await update.message.reply_text(
+                "🛑 <b>LONG取引を停止しました</b>\n\n"
+                "SHORT取引は継続されます。\n"
+                "再開するには /resumelong を使用してください。",
+                parse_mode="HTML"
+            )
+            logger.warning("LONG trading stopped via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error stopping LONG: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def stopshort(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /stopshort command - stop SHORT positions only."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop
+
+            emergency = get_emergency_stop()
+            emergency.stop_direction("SHORT", "Telegramから手動停止")
+
+            await update.message.reply_text(
+                "🛑 <b>SHORT取引を停止しました</b>\n\n"
+                "LONG取引は継続されます。\n"
+                "再開するには /resumeshort を使用してください。",
+                parse_mode="HTML"
+            )
+            logger.warning("SHORT trading stopped via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error stopping SHORT: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def resumelong(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /resumelong command - resume LONG positions."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop
+
+            emergency = get_emergency_stop()
+
+            if not emergency.long_stopped:
+                await update.message.reply_text("LONG取引は既に稼働中です")
+                return
+
+            emergency.resume_direction("LONG")
+
+            await update.message.reply_text(
+                "✅ <b>LONG取引を再開しました</b>",
+                parse_mode="HTML"
+            )
+            logger.info("LONG trading resumed via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error resuming LONG: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def resumeshort(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /resumeshort command - resume SHORT positions."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop
+
+            emergency = get_emergency_stop()
+
+            if not emergency.short_stopped:
+                await update.message.reply_text("SHORT取引は既に稼働中です")
+                return
+
+            emergency.resume_direction("SHORT")
+
+            await update.message.reply_text(
+                "✅ <b>SHORT取引を再開しました</b>",
+                parse_mode="HTML"
+            )
+            logger.info("SHORT trading resumed via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error resuming SHORT: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
     def _check_authorized(self, update: Update) -> bool:
         """Check if the message is from authorized chat."""
         if str(update.effective_chat.id) != self.chat_id:
@@ -410,6 +514,11 @@ class TelegramCommandHandler:
         app.add_handler(CommandHandler("stop", self.stop))
         app.add_handler(CommandHandler("fullstop", self.fullstop))
         app.add_handler(CommandHandler("resume", self.resume))
+        # Direction-specific stop/resume
+        app.add_handler(CommandHandler("stoplong", self.stoplong))
+        app.add_handler(CommandHandler("stopshort", self.stopshort))
+        app.add_handler(CommandHandler("resumelong", self.resumelong))
+        app.add_handler(CommandHandler("resumeshort", self.resumeshort))
 
         return app
 
