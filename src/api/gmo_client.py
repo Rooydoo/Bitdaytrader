@@ -330,6 +330,159 @@ class GMOCoinClient:
 
         return result["data"]["list"]
 
+    # Margin Trading Methods
+
+    def get_margin_status(self) -> dict[str, Any]:
+        """Get margin account status."""
+        result = self._private_request("GET", "/v1/account/margin")
+
+        if result["status"] != 0:
+            raise RuntimeError(f"API Error: {result.get('messages', 'Unknown error')}")
+
+        return result["data"]
+
+    def place_margin_order(
+        self,
+        symbol: str,
+        side: str,
+        size: float,
+        order_type: str = "LIMIT",
+        price: float | None = None,
+        time_in_force: str = "GTC",
+    ) -> Order:
+        """
+        Place a margin order (for leverage trading).
+
+        Args:
+            symbol: Trading symbol (e.g., BTC_JPY)
+            side: BUY (long) or SELL (short)
+            size: Order size
+            order_type: MARKET or LIMIT
+            price: Limit price (required for LIMIT orders)
+            time_in_force: GTC or IOC
+
+        Returns:
+            Order object
+        """
+        body: dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "executionType": order_type,
+            "size": str(size),
+        }
+
+        if order_type == "LIMIT":
+            if price is None:
+                raise ValueError("Price is required for LIMIT orders")
+            body["price"] = str(int(price))
+            body["timeInForce"] = time_in_force
+
+        result = self._private_request("POST", "/v1/order", body=body)
+
+        if result["status"] != 0:
+            raise RuntimeError(f"API Error: {result.get('messages', 'Unknown error')}")
+
+        data = result["data"]
+        return Order(
+            order_id=data,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            price=price,
+            size=size,
+            executed_size=0.0,
+            status="ORDERED",
+            timestamp=datetime.now(),
+        )
+
+    def close_margin_position(
+        self,
+        symbol: str,
+        side: str,
+        size: float,
+        position_id: str | None = None,
+        order_type: str = "MARKET",
+        price: float | None = None,
+    ) -> Order:
+        """
+        Close a margin position.
+
+        Args:
+            symbol: Trading symbol
+            side: BUY (to close short) or SELL (to close long)
+            size: Size to close
+            position_id: Specific position ID to close (optional)
+            order_type: MARKET or LIMIT
+            price: Limit price (for LIMIT orders)
+
+        Returns:
+            Order object
+        """
+        body: dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "executionType": order_type,
+            "size": str(size),
+            "settlePosition": [{"size": str(size)}],
+        }
+
+        if position_id:
+            body["settlePosition"] = [{"positionId": position_id, "size": str(size)}]
+
+        if order_type == "LIMIT":
+            if price is None:
+                raise ValueError("Price is required for LIMIT orders")
+            body["price"] = str(int(price))
+
+        result = self._private_request("POST", "/v1/closeOrder", body=body)
+
+        if result["status"] != 0:
+            raise RuntimeError(f"API Error: {result.get('messages', 'Unknown error')}")
+
+        data = result["data"]
+        return Order(
+            order_id=data,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            price=price,
+            size=size,
+            executed_size=0.0,
+            status="ORDERED",
+            timestamp=datetime.now(),
+        )
+
+    def close_all_positions(self, symbol: str = "BTC_JPY") -> list[Order]:
+        """
+        Close all open positions for a symbol.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            List of close orders
+        """
+        positions = self.get_positions(symbol)
+        orders = []
+
+        for pos in positions:
+            # Determine close side (opposite of position side)
+            close_side = "SELL" if pos["side"] == "BUY" else "BUY"
+            size = float(pos["size"]) - float(pos.get("executedSize", 0))
+
+            if size > 0:
+                order = self.close_margin_position(
+                    symbol=symbol,
+                    side=close_side,
+                    size=size,
+                    position_id=str(pos["positionId"]),
+                    order_type="MARKET",
+                )
+                orders.append(order)
+                logger.info(f"Closed position {pos['positionId']}: {close_side} {size}")
+
+        return orders
+
     def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()

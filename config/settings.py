@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     timeframe: str = Field(default="15min", description="Candle timeframe")
     prediction_horizon: int = Field(default=4, description="Prediction horizon (periods)")
 
+    # Leverage Settings (GMO Coin margin trading)
+    use_leverage: bool = Field(default=True, description="Use leverage/margin trading")
+    leverage: float = Field(default=1.2, description="Leverage ratio (1.0-2.0)")
+    margin_call_threshold: float = Field(default=0.75, description="Margin maintenance ratio")
+
     # Risk Management
     risk_per_trade: float = Field(default=0.02, description="Risk per trade (2%)")
     daily_loss_limit: float = Field(default=0.03, description="Daily loss limit (3%)")

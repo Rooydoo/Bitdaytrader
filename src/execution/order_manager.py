@@ -139,6 +139,69 @@ class OrderManager:
             logger.error(f"Failed to open position: {e}")
             return None
 
+    def open_margin_position(
+        self,
+        side: str,
+        size: float,
+        entry_price: float,
+        stop_loss: float,
+        take_profit_levels: list[tuple[float, float]],
+    ) -> Position | None:
+        """
+        Open a new margin position (for leverage/short trading).
+
+        Args:
+            side: "BUY" for long, "SELL" for short
+            size: Position size
+            entry_price: Limit price for entry
+            stop_loss: Stop loss price
+            take_profit_levels: List of (price, ratio) tuples
+
+        Returns:
+            Position object or None if failed
+        """
+        if self.current_position is not None:
+            logger.warning("Position already exists, cannot open new position")
+            return None
+
+        try:
+            # Place margin entry order
+            order = self.client.place_margin_order(
+                symbol=self.symbol,
+                side=side,
+                size=size,
+                order_type="LIMIT",
+                price=entry_price,
+                time_in_force="GTC",
+            )
+
+            direction = "LONG" if side == "BUY" else "SHORT"
+            logger.info(
+                f"Margin {direction} order placed: {side} {size} @ {entry_price}, "
+                f"order_id={order.order_id}"
+            )
+
+            # Create position object
+            position = Position(
+                symbol=self.symbol,
+                side=PositionSide.LONG if side == "BUY" else PositionSide.SHORT,
+                entry_price=entry_price,
+                size=size,
+                stop_loss=stop_loss,
+                take_profit_levels=[
+                    TakeProfitLevel(price=p, ratio=r) for p, r in take_profit_levels
+                ],
+                entry_order_id=order.order_id,
+                status=PositionStatus.PENDING,
+            )
+
+            self.current_position = position
+            return position
+
+        except Exception as e:
+            logger.error(f"Failed to open margin position: {e}")
+            return None
+
     def check_entry_filled(self) -> bool:
         """
         Check if entry order is filled.

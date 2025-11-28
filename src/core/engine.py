@@ -146,9 +146,16 @@ class TradingEngine:
             return pd.DataFrame()
 
     async def _check_new_signal(self, df: pd.DataFrame) -> None:
-        """Check for new trading signal."""
+        """Check for new trading signal (long or short)."""
         # Get capital
         capital = self._get_capital()
+
+        # Apply leverage to effective capital
+        if self.settings.use_leverage:
+            effective_capital = capital * self.settings.leverage
+            logger.debug(f"Leverage {self.settings.leverage}x: {capital:.0f} -> {effective_capital:.0f}")
+        else:
+            effective_capital = capital
 
         # Check risk limits
         risk_check = self.risk_manager.check_can_trade(capital)
@@ -181,21 +188,37 @@ class TradingEngine:
             )
             return
 
-        # Only trade on positive prediction
-        if prediction != 1:
-            logger.info("No buy signal")
-            return
+        # Determine trade direction
+        # prediction == 1: price will go UP -> LONG (BUY)
+        # prediction == 0: price will go DOWN -> SHORT (SELL)
+        if prediction == 1:
+            side = "BUY"
+            direction = "LONG"
+        else:
+            side = "SELL"
+            direction = "SHORT"
+
+        logger.info(f"Signal: {direction} with confidence {confidence:.4f}")
 
         # Execute trade
-        await self._execute_entry(df, confidence, capital)
+        await self._execute_entry(df, confidence, effective_capital, side)
 
     async def _execute_entry(
         self,
         df: pd.DataFrame,
         confidence: float,
         capital: float,
+        side: str,
     ) -> None:
-        """Execute entry trade."""
+        """
+        Execute entry trade (long or short).
+
+        Args:
+            df: OHLCV data
+            confidence: Prediction confidence
+            capital: Available capital (with leverage applied)
+            side: "BUY" for long, "SELL" for short
+        """
         # Get current price and ATR
         current_price = df["close"].iloc[-1]
         atr = self._calculate_current_atr(df)
@@ -209,14 +232,14 @@ class TradingEngine:
             capital=capital,
             entry_price=current_price,
             atr=atr,
-            side="BUY",
+            side=side,
         )
 
         # Calculate take profit levels
         tp_levels = self.risk_manager.calculate_take_profit_levels(
             entry_price=current_price,
             stop_loss=position.stop_loss,
-            side="BUY",
+            side=side,
             tp_levels=[
                 (self.settings.tp_level_1, self.settings.tp_ratio_1),
                 (self.settings.tp_level_2, self.settings.tp_ratio_2),
@@ -224,24 +247,41 @@ class TradingEngine:
             ],
         )
 
+        direction = "LONG" if side == "BUY" else "SHORT"
         logger.info(
-            f"Opening position: size={position.size:.6f}, "
+            f"Opening {direction} position: size={position.size:.6f}, "
             f"entry={current_price}, sl={position.stop_loss}"
         )
 
         # Place order
         if self.settings.mode == "live":
-            # Use bid price for maker entry (slightly below market)
             ticker = self.client.get_ticker(self.settings.symbol)
-            entry_price = ticker.bid  # Maker order
 
-            pos = self.order_manager.open_position(
-                side="BUY",
-                size=position.size,
-                entry_price=entry_price,
-                stop_loss=position.stop_loss,
-                take_profit_levels=tp_levels,
-            )
+            # For maker orders:
+            # LONG: use bid (slightly below market to get filled as maker)
+            # SHORT: use ask (slightly above market to get filled as maker)
+            if side == "BUY":
+                entry_price = ticker.bid
+            else:
+                entry_price = ticker.ask
+
+            # Use margin order if leverage is enabled
+            if self.settings.use_leverage:
+                pos = self.order_manager.open_margin_position(
+                    side=side,
+                    size=position.size,
+                    entry_price=entry_price,
+                    stop_loss=position.stop_loss,
+                    take_profit_levels=tp_levels,
+                )
+            else:
+                pos = self.order_manager.open_position(
+                    side=side,
+                    size=position.size,
+                    entry_price=entry_price,
+                    stop_loss=position.stop_loss,
+                    take_profit_levels=tp_levels,
+                )
 
             if pos:
                 # Record trade
@@ -250,14 +290,14 @@ class TradingEngine:
                 # Send notification
                 await self.telegram.notify_trade_opened(
                     symbol=self.settings.symbol,
-                    side="BUY",
+                    side=side,
                     price=entry_price,
                     size=position.size,
                     stop_loss=position.stop_loss,
                     confidence=confidence,
                 )
         else:
-            logger.info(f"Paper trading: Would open position at {current_price}")
+            logger.info(f"Paper trading: Would open {direction} position at {current_price}")
 
     async def _manage_existing_position(self, df: pd.DataFrame) -> None:
         """Manage existing position."""
