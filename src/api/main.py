@@ -1269,6 +1269,155 @@ def _apply_setting_to_engine(key: str) -> None:
         )
 
 
+# ============================================
+# Backup Endpoints
+# ============================================
+
+# Global backup manager (lazy initialized)
+_backup_manager: Any = None
+
+
+def get_backup_manager():
+    """Get or create backup manager instance."""
+    global _backup_manager
+    if _backup_manager is None:
+        from src.backup.manager import BackupManager, BackupConfig
+        _backup_manager = BackupManager(BackupConfig())
+    return _backup_manager
+
+
+@app.get("/api/backup/list")
+async def list_backups():
+    """List all available backups."""
+    try:
+        manager = get_backup_manager()
+        backups = manager.list_backups()
+        stats = manager.get_backup_stats()
+        return {
+            "backups": backups,
+            "stats": stats,
+        }
+    except Exception as e:
+        logger.error(f"Failed to list backups: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backup/create")
+async def create_backup(name_suffix: str = ""):
+    """Create a new backup."""
+    try:
+        manager = get_backup_manager()
+        # Run backup in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, manager.create_backup, name_suffix or "manual"
+        )
+
+        if result.success:
+            # Send notification
+            await _send_emergency_alert(
+                f"Backup completed: {result.backup_path.name if result.backup_path else 'unknown'}\n"
+                f"Files: {len(result.files_backed_up)}, "
+                f"Size: {result.size_bytes / 1024 / 1024:.2f} MB"
+            )
+            return {
+                "success": True,
+                "backup_name": result.backup_path.name if result.backup_path else None,
+                "files_backed_up": len(result.files_backed_up),
+                "size_bytes": result.size_bytes,
+                "duration_seconds": result.duration_seconds,
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Backup failed: {result.error_message}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create backup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backup/restore/{backup_name}")
+async def restore_backup(backup_name: str, confirm: bool = False):
+    """
+    Restore a backup.
+
+    WARNING: This will overwrite existing data!
+    Set confirm=true to actually perform the restore.
+    """
+    if not confirm:
+        return {
+            "success": False,
+            "message": "Please set confirm=true to perform restore. WARNING: This will overwrite existing data!",
+        }
+
+    try:
+        manager = get_backup_manager()
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(
+            None, manager.restore_backup, backup_name
+        )
+
+        if success:
+            await _send_emergency_alert(f"Backup restored: {backup_name}")
+            return {
+                "success": True,
+                "message": f"Backup {backup_name} restored successfully",
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to restore backup: {backup_name}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restore backup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/backup/{backup_name}")
+async def delete_backup(backup_name: str):
+    """Delete a specific backup."""
+    try:
+        manager = get_backup_manager()
+        backup_path = manager.backup_dir / backup_name
+
+        if not backup_path.exists():
+            # Try with .tar.gz
+            backup_path = manager.backup_dir / f"{backup_name}.tar.gz"
+            if not backup_path.exists():
+                raise HTTPException(status_code=404, detail="Backup not found")
+
+        import shutil
+        if backup_path.is_file():
+            backup_path.unlink()
+        else:
+            shutil.rmtree(backup_path)
+
+        logger.info(f"Deleted backup: {backup_name}")
+        return {"success": True, "message": f"Backup {backup_name} deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete backup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backup/stats")
+async def get_backup_stats():
+    """Get backup statistics."""
+    try:
+        manager = get_backup_manager()
+        return manager.get_backup_stats()
+    except Exception as e:
+        logger.error(f"Failed to get backup stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Run with: uvicorn src.api.main:app --host 0.0.0.0 --port 8088
 if __name__ == "__main__":
     import uvicorn
