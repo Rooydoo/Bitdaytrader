@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     # Model Settings
     model_path: str = Field(default="models/lightgbm_model.joblib", description="Model file path")
+    training_data_path: str = Field(default="data/ohlcv_history.csv", description="Training data CSV path")
 
     # Database
     db_path: str = Field(default="data/trading.db", description="SQLite database path")

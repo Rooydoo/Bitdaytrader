@@ -116,6 +116,86 @@ class RiskManager:
         self._long_stats = DirectionStats()
         self._short_stats = DirectionStats()
 
+        # Conservative mode (activated when overfitting detected)
+        self._conservative_mode = False
+        self._conservative_multiplier = 0.5  # Reduce risk by 50%
+        self._original_long_config: DirectionConfig | None = None
+        self._original_short_config: DirectionConfig | None = None
+
+    def enable_conservative_mode(self, multiplier: float = 0.5) -> None:
+        """
+        Enable conservative mode - reduces all risk parameters.
+
+        Called when overfitting is detected to protect capital.
+
+        Args:
+            multiplier: Risk reduction factor (0.5 = 50% of normal risk)
+        """
+        if self._conservative_mode:
+            logger.warning("Conservative mode already enabled")
+            return
+
+        self._conservative_multiplier = multiplier
+
+        # Store original configs
+        self._original_long_config = DirectionConfig(
+            risk_per_trade=self.long_config.risk_per_trade,
+            max_position_size=self.long_config.max_position_size,
+            max_daily_trades=self.long_config.max_daily_trades,
+            confidence_threshold=self.long_config.confidence_threshold,
+            sl_atr_multiple=self.long_config.sl_atr_multiple,
+            tp_levels=self.long_config.tp_levels.copy(),
+        )
+        self._original_short_config = DirectionConfig(
+            risk_per_trade=self.short_config.risk_per_trade,
+            max_position_size=self.short_config.max_position_size,
+            max_daily_trades=self.short_config.max_daily_trades,
+            confidence_threshold=self.short_config.confidence_threshold,
+            sl_atr_multiple=self.short_config.sl_atr_multiple,
+            tp_levels=self.short_config.tp_levels.copy(),
+        )
+
+        # Apply conservative adjustments
+        for config in [self.long_config, self.short_config]:
+            config.risk_per_trade *= multiplier
+            config.max_position_size *= multiplier
+            config.max_daily_trades = max(1, int(config.max_daily_trades * multiplier))
+            # Increase confidence threshold (be more selective)
+            config.confidence_threshold = min(0.85, config.confidence_threshold + 0.10)
+            # Tighter stop loss
+            config.sl_atr_multiple *= 0.75
+            # Take profits earlier (reduce R-multiples)
+            config.tp_levels = [
+                (level * 0.75, ratio) for level, ratio in config.tp_levels
+            ]
+
+        self._conservative_mode = True
+        logger.warning(
+            f"CONSERVATIVE MODE ENABLED: Risk reduced to {multiplier:.0%}, "
+            f"confidence threshold increased by 10%"
+        )
+
+    def disable_conservative_mode(self) -> None:
+        """Disable conservative mode and restore original settings."""
+        if not self._conservative_mode:
+            logger.warning("Conservative mode not enabled")
+            return
+
+        if self._original_long_config:
+            self.long_config = self._original_long_config
+            self._original_long_config = None
+        if self._original_short_config:
+            self.short_config = self._original_short_config
+            self._original_short_config = None
+
+        self._conservative_mode = False
+        logger.info("Conservative mode disabled, original settings restored")
+
+    @property
+    def is_conservative_mode(self) -> bool:
+        """Check if conservative mode is active."""
+        return self._conservative_mode
+
     def get_config(self, side: str) -> DirectionConfig:
         """Get configuration for the specified direction."""
         if side == "BUY":

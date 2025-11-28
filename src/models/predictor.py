@@ -98,6 +98,28 @@ class Predictor:
         """Check if model is loaded."""
         return self.model is not None
 
+    def reload_model(self, model_path: str | Path | None = None) -> None:
+        """
+        Reload model from file (useful after retraining).
+
+        Args:
+            model_path: Path to model file, or use current path if None
+        """
+        path = Path(model_path) if model_path else self.model_path
+
+        if path is None:
+            raise RuntimeError("No model path specified")
+
+        if not path.exists():
+            raise FileNotFoundError(f"Model file not found: {path}")
+
+        # Clear current model
+        self.model = None
+
+        # Load new model
+        self.load(path)
+        logger.info(f"Model reloaded from {path}")
+
     @staticmethod
     def get_default_params() -> dict[str, Any]:
         """Get default LightGBM parameters optimized for this task."""

@@ -225,6 +225,98 @@ class ModelTrainer:
             "verbose": -1,
         }
 
+    def get_anti_overfit_params(self, severity: str = "moderate") -> dict[str, Any]:
+        """
+        Get LightGBM parameters adjusted to reduce overfitting.
+
+        Args:
+            severity: "mild", "moderate", or "severe" adjustments
+
+        Returns:
+            Adjusted parameters dict
+        """
+        base_params = self._get_default_params()
+
+        if severity == "mild":
+            # Mild adjustments
+            adjustments = {
+                "num_leaves": 20,
+                "max_depth": 4,
+                "min_child_samples": 30,
+                "reg_alpha": 0.3,
+                "reg_lambda": 0.3,
+                "feature_fraction": 0.7,
+                "bagging_fraction": 0.7,
+            }
+        elif severity == "moderate":
+            # Moderate adjustments
+            adjustments = {
+                "num_leaves": 15,
+                "max_depth": 3,
+                "min_child_samples": 50,
+                "reg_alpha": 0.5,
+                "reg_lambda": 0.5,
+                "feature_fraction": 0.6,
+                "bagging_fraction": 0.6,
+                "learning_rate": 0.03,
+                "n_estimators": 80,
+            }
+        else:  # severe
+            # Strong regularization
+            adjustments = {
+                "num_leaves": 10,
+                "max_depth": 2,
+                "min_child_samples": 100,
+                "reg_alpha": 1.0,
+                "reg_lambda": 1.0,
+                "feature_fraction": 0.5,
+                "bagging_fraction": 0.5,
+                "learning_rate": 0.02,
+                "n_estimators": 50,
+            }
+
+        base_params.update(adjustments)
+        logger.info(f"Using anti-overfit params (severity={severity}): {adjustments}")
+        return base_params
+
+    def suggest_adjustments(self, accuracy_gap: float) -> dict[str, Any]:
+        """
+        Suggest parameter adjustments based on overfitting severity.
+
+        Args:
+            accuracy_gap: Train accuracy - Test accuracy gap
+
+        Returns:
+            Dict with severity level and suggested params
+        """
+        if accuracy_gap < 0.05:
+            return {
+                "severity": "none",
+                "message": "No overfitting detected",
+                "params": self._get_default_params(),
+            }
+        elif accuracy_gap < 0.10:
+            return {
+                "severity": "mild",
+                "message": f"Mild overfitting (gap={accuracy_gap:.1%}). "
+                           "Suggesting slight regularization increase.",
+                "params": self.get_anti_overfit_params("mild"),
+            }
+        elif accuracy_gap < 0.15:
+            return {
+                "severity": "moderate",
+                "message": f"Moderate overfitting (gap={accuracy_gap:.1%}). "
+                           "Suggesting stronger regularization.",
+                "params": self.get_anti_overfit_params("moderate"),
+            }
+        else:
+            return {
+                "severity": "severe",
+                "message": f"Severe overfitting (gap={accuracy_gap:.1%}). "
+                           "Suggesting maximum regularization and simpler model.",
+                "params": self.get_anti_overfit_params("severe"),
+            }
+
     def save_model(
         self,
         model: lgb.LGBMClassifier,

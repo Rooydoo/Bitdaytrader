@@ -507,3 +507,100 @@ class TelegramBot:
 ━━━━━━━━━━━━━━
 """
         return await self.send_message(text.strip())
+
+    async def notify_overfitting_detected(
+        self,
+        reason: str,
+        gap: float,
+        action: str,
+    ) -> bool:
+        """
+        Send notification when overfitting is detected.
+
+        Args:
+            reason: Reason for overfitting detection
+            gap: Accuracy gap (train - test)
+            action: Action taken in response
+        """
+        # Severity indicator
+        if gap > 0.15:
+            severity = "🔴 重度"
+        elif gap > 0.10:
+            severity = "🟠 中度"
+        else:
+            severity = "🟡 軽度"
+
+        text = f"""
+⚠️ <b>過学習検出</b>
+━━━━━━━━━━━━━━
+
+{severity} (gap: {gap:.1%})
+
+📋 検出理由:
+{reason}
+
+🛡️ 対応:
+{action}
+
+<i>リスクパラメータを自動調整しました。
+次回再訓練で改善を試みます。</i>
+
+━━━━━━━━━━━━━━
+"""
+        return await self.send_message(text.strip())
+
+    async def notify_conservative_mode_disabled(
+        self,
+        reason: str,
+    ) -> bool:
+        """
+        Send notification when conservative mode is disabled.
+
+        Args:
+            reason: Reason for disabling conservative mode
+        """
+        text = f"""
+✅ <b>保守モード解除</b>
+━━━━━━━━━━━━━━
+
+📋 理由: {reason}
+
+<i>通常のリスクパラメータに戻りました。</i>
+
+━━━━━━━━━━━━━━
+"""
+        return await self.send_message(text.strip())
+
+    async def notify_retraining_triggered(
+        self,
+        reason: str,
+        params_adjusted: dict[str, Any] | None = None,
+    ) -> bool:
+        """
+        Send notification when model retraining is triggered.
+
+        Args:
+            reason: Reason for retraining
+            params_adjusted: Parameters adjusted for retraining
+        """
+        params_text = ""
+        if params_adjusted:
+            param_items = "\n".join([
+                f"  • {k}: {v}" for k, v in list(params_adjusted.items())[:5]
+            ])
+            params_text = f"""
+📊 調整パラメータ:
+{param_items}
+"""
+
+        text = f"""
+🔄 <b>再訓練開始</b>
+━━━━━━━━━━━━━━
+
+📋 理由: {reason}
+{params_text}
+<i>再訓練完了後、新モデルに切り替えます。</i>
+
+━━━━━━━━━━━━━━
+"""
+        return await self.send_message(text.strip())

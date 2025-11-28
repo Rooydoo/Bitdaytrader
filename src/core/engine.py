@@ -99,11 +99,18 @@ class TradingEngine:
         self._ohlcv_cache: pd.DataFrame | None = None
         self._last_fetch_time: datetime | None = None
 
+        # Overfitting check state
+        self._last_overfit_check: datetime | None = None
+        self._overfit_check_interval = timedelta(hours=1)  # Check hourly
+
     async def run_cycle(self) -> None:
         """Run one trading cycle (called every 15 minutes)."""
         logger.info("Starting trading cycle")
 
         try:
+            # 0. Check for overfitting and adjust risk parameters
+            await self._check_and_respond_to_overfitting()
+
             # 1. Fetch latest data
             df = await self._fetch_ohlcv_data()
 
@@ -167,6 +174,57 @@ class TradingEngine:
         except Exception as e:
             logger.error(f"Failed to fetch OHLCV data: {e}")
             return pd.DataFrame()
+
+    async def _check_and_respond_to_overfitting(self) -> None:
+        """Check for overfitting and enable conservative mode if needed."""
+        now = datetime.now()
+
+        # Skip if checked recently
+        if (
+            self._last_overfit_check is not None
+            and now - self._last_overfit_check < self._overfit_check_interval
+        ):
+            return
+
+        self._last_overfit_check = now
+
+        # Check for degradation
+        degradation = self.walkforward_repo.check_degradation()
+
+        if degradation.get("degraded"):
+            if not self.risk_manager.is_conservative_mode:
+                # Enable conservative mode
+                gap = degradation.get("gap", 0)
+                if gap > 0.15:
+                    multiplier = 0.3  # Very conservative for severe overfitting
+                elif gap > 0.10:
+                    multiplier = 0.5  # Moderate conservative
+                else:
+                    multiplier = 0.7  # Mild conservative
+
+                self.risk_manager.enable_conservative_mode(multiplier)
+
+                # Notify via Telegram
+                await self.telegram.notify_overfitting_detected(
+                    reason=degradation.get("reason", "Unknown"),
+                    gap=gap,
+                    action=f"Conservative mode enabled (risk reduced to {multiplier:.0%})",
+                )
+
+                logger.warning(
+                    f"Overfitting detected: {degradation.get('reason')}. "
+                    f"Conservative mode enabled with multiplier {multiplier}"
+                )
+        else:
+            # Disable conservative mode if previously enabled and performance is now stable
+            if self.risk_manager.is_conservative_mode:
+                self.risk_manager.disable_conservative_mode()
+
+                await self.telegram.notify_conservative_mode_disabled(
+                    reason="Model performance stabilized"
+                )
+
+                logger.info("Conservative mode disabled - model performance stabilized")
 
     async def _check_new_signal(self, df: pd.DataFrame) -> None:
         """Check for new trading signal (long or short)."""
@@ -485,6 +543,77 @@ class TradingEngine:
     async def send_model_analysis_report(self) -> None:
         """Send model analysis report (bi-weekly walk-forward analysis)."""
         await self.report_generator.generate_model_analysis_report()
+
+        # Check if retraining is needed and trigger if so
+        await self._check_and_trigger_retraining()
+
+    async def _check_and_trigger_retraining(self) -> None:
+        """Check if model retraining is needed and trigger if so."""
+        from training.retrainer import AutoRetrainer
+
+        try:
+            retrainer = AutoRetrainer(
+                walkforward_repo=self.walkforward_repo,
+                data_path=self.settings.training_data_path,
+                model_output_path=self.settings.model_path,
+            )
+
+            # Check if retraining is needed
+            check = retrainer.check_retraining_needed()
+
+            if not check["needed"]:
+                logger.info(f"Retraining not needed: {check['reason']}")
+                return
+
+            logger.info(f"Retraining triggered: {check['reason']}")
+
+            # Get recommended params
+            params_info = retrainer.get_recommended_params()
+
+            # Notify start
+            await self.telegram.notify_retraining_triggered(
+                reason=check["reason"],
+                params_adjusted=params_info.get("params"),
+            )
+
+            # Run retraining (this may take a while)
+            result = retrainer.retrain_model(severity=check["severity"])
+
+            if result.get("success"):
+                # Reload model in predictor
+                self.predictor.reload_model(self.settings.model_path)
+
+                # Disable conservative mode since we have a fresh model
+                if self.risk_manager.is_conservative_mode:
+                    self.risk_manager.disable_conservative_mode()
+
+                # Get old metrics for comparison
+                history = self.walkforward_repo.get_history(limit=2)
+                old_accuracy = history[1].test_accuracy_mean if len(history) > 1 else None
+                new_accuracy = result.get("metrics", {}).get("accuracy_mean")
+
+                # Notify completion
+                await self.telegram.send_retraining_notification(
+                    reason=check["reason"],
+                    old_accuracy=old_accuracy,
+                    new_accuracy=new_accuracy,
+                    improvement=(
+                        new_accuracy - old_accuracy
+                        if old_accuracy and new_accuracy
+                        else None
+                    ),
+                )
+
+                logger.info(f"Retraining completed: {result.get('model_version')}")
+            else:
+                logger.error(f"Retraining failed: {result.get('error')}")
+                await self.telegram.notify_error(
+                    f"Model retraining failed: {result.get('error')}",
+                    "retraining",
+                )
+
+        except Exception as e:
+            logger.exception(f"Error in retraining check: {e}")
 
     def close(self) -> None:
         """Clean up resources."""
