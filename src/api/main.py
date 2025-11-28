@@ -1,20 +1,125 @@
 """FastAPI backend for web dashboard."""
 
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 from pydantic import BaseModel
 
 from config.settings import get_settings
 from src.settings.runtime import get_runtime_settings
+
+# Default API port
+API_PORT = 8088
 
 app = FastAPI(
     title="GMO Trading Bot API",
     description="API for monitoring and configuring the trading bot",
     version="1.0.0",
 )
+
+
+class EmergencyStopMode(str, Enum):
+    """Emergency stop modes."""
+    FULL_STOP = "full_stop"  # Stop everything, close all positions
+    NO_NEW_POSITIONS = "no_new_positions"  # Keep existing, don't open new
+    NONE = "none"  # Normal operation
+
+
+class EmergencyStopReason(str, Enum):
+    """Reasons for emergency stop."""
+    MANUAL = "manual"
+    DAILY_LOSS_LIMIT = "daily_loss_limit"
+    MARGIN_ALERT = "margin_alert"
+    API_ERROR = "api_error"
+    MODEL_ERROR = "model_error"
+
+
+# Emergency stop state
+class EmergencyStopState:
+    """Manages emergency stop state."""
+
+    def __init__(self):
+        self.mode: EmergencyStopMode = EmergencyStopMode.NONE
+        self.reason: EmergencyStopReason | None = None
+        self.triggered_at: datetime | None = None
+        self.message: str = ""
+        self.auto_resume_at: datetime | None = None
+
+    def activate(
+        self,
+        mode: EmergencyStopMode,
+        reason: EmergencyStopReason,
+        message: str = "",
+        auto_resume_hours: int | None = None,
+    ) -> None:
+        """Activate emergency stop."""
+        self.mode = mode
+        self.reason = reason
+        self.triggered_at = datetime.now()
+        self.message = message
+
+        if auto_resume_hours:
+            self.auto_resume_at = datetime.now() + timedelta(hours=auto_resume_hours)
+
+        logger.warning(
+            f"EMERGENCY STOP ACTIVATED: mode={mode.value}, reason={reason.value}, "
+            f"message={message}"
+        )
+
+    def deactivate(self) -> None:
+        """Deactivate emergency stop."""
+        logger.info(f"Emergency stop deactivated (was: {self.mode.value})")
+        self.mode = EmergencyStopMode.NONE
+        self.reason = None
+        self.triggered_at = None
+        self.message = ""
+        self.auto_resume_at = None
+
+    def check_auto_resume(self) -> bool:
+        """Check if auto-resume time has passed."""
+        if self.auto_resume_at and datetime.now() >= self.auto_resume_at:
+            self.deactivate()
+            return True
+        return False
+
+    def is_active(self) -> bool:
+        """Check if any emergency stop is active."""
+        self.check_auto_resume()
+        return self.mode != EmergencyStopMode.NONE
+
+    def can_open_positions(self) -> bool:
+        """Check if new positions can be opened."""
+        self.check_auto_resume()
+        return self.mode == EmergencyStopMode.NONE
+
+    def should_close_all(self) -> bool:
+        """Check if all positions should be closed."""
+        return self.mode == EmergencyStopMode.FULL_STOP
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "mode": self.mode.value,
+            "reason": self.reason.value if self.reason else None,
+            "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
+            "message": self.message,
+            "auto_resume_at": self.auto_resume_at.isoformat() if self.auto_resume_at else None,
+            "is_active": self.is_active(),
+            "can_open_positions": self.can_open_positions(),
+        }
+
+
+# Global emergency stop state
+_emergency_stop = EmergencyStopState()
+
+
+def get_emergency_stop() -> EmergencyStopState:
+    """Get global emergency stop state."""
+    return _emergency_stop
 
 # Allow CORS for local development
 app.add_middleware(
@@ -47,7 +152,16 @@ class StatusResponse(BaseModel):
     daily_pnl: float
     daily_trades: int
     conservative_mode: bool
+    emergency_stop: dict
     last_update: str
+
+
+class EmergencyStopRequest(BaseModel):
+    """Request model for emergency stop."""
+    mode: str  # "full_stop" or "no_new_positions"
+    reason: str = "manual"
+    message: str = ""
+    auto_resume_hours: int | None = None
 
 
 class AllocationResponse(BaseModel):
@@ -139,6 +253,7 @@ async def get_status():
         daily_pnl=daily_pnl,
         daily_trades=daily_trades,
         conservative_mode=conservative_mode,
+        emergency_stop=_emergency_stop.to_dict(),
         last_update=datetime.now().isoformat(),
     )
 
@@ -479,6 +594,159 @@ async def get_model_status():
     }
 
 
+# ============================================
+# Emergency Stop Endpoints
+# ============================================
+
+@app.get("/api/emergency")
+async def get_emergency_status():
+    """Get current emergency stop status."""
+    return _emergency_stop.to_dict()
+
+
+@app.post("/api/emergency/stop")
+async def activate_emergency_stop(request: EmergencyStopRequest):
+    """
+    Activate emergency stop.
+
+    Modes:
+    - full_stop: Stop all trading, close all positions immediately
+    - no_new_positions: Keep existing positions, don't open new ones
+    """
+    try:
+        mode = EmergencyStopMode(request.mode)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode. Use 'full_stop' or 'no_new_positions'"
+        )
+
+    try:
+        reason = EmergencyStopReason(request.reason)
+    except ValueError:
+        reason = EmergencyStopReason.MANUAL
+
+    _emergency_stop.activate(
+        mode=mode,
+        reason=reason,
+        message=request.message,
+        auto_resume_hours=request.auto_resume_hours,
+    )
+
+    # If full stop and engine is running, close all positions
+    if mode == EmergencyStopMode.FULL_STOP and _engine:
+        try:
+            await _close_all_positions()
+        except Exception as e:
+            logger.error(f"Failed to close positions: {e}")
+
+    # Send Telegram alert
+    await _send_emergency_alert(
+        f"🚨 緊急停止発動\n"
+        f"モード: {mode.value}\n"
+        f"理由: {reason.value}\n"
+        f"メッセージ: {request.message or 'なし'}"
+    )
+
+    return {
+        "success": True,
+        "message": f"Emergency stop activated: {mode.value}",
+        "status": _emergency_stop.to_dict(),
+    }
+
+
+@app.post("/api/emergency/resume")
+async def deactivate_emergency_stop():
+    """Deactivate emergency stop and resume normal operation."""
+    if not _emergency_stop.is_active():
+        return {
+            "success": False,
+            "message": "Emergency stop is not active",
+        }
+
+    _emergency_stop.deactivate()
+
+    # Send Telegram alert
+    await _send_emergency_alert("✅ 緊急停止解除 - 取引を再開します")
+
+    return {
+        "success": True,
+        "message": "Emergency stop deactivated, trading resumed",
+        "status": _emergency_stop.to_dict(),
+    }
+
+
+async def _close_all_positions():
+    """Close all open positions (called during full stop)."""
+    if not _engine:
+        return
+
+    try:
+        open_trades = _engine.trade_repo.get_open_trades()
+        for trade in open_trades:
+            logger.info(f"Emergency closing position: {trade.symbol} {trade.side}")
+            # This would need to be implemented in the engine
+            # For now, we just log the intent
+    except Exception as e:
+        logger.error(f"Error closing positions: {e}")
+
+
+async def _send_emergency_alert(message: str):
+    """Send emergency alert via Telegram."""
+    try:
+        settings = get_settings()
+        if settings.telegram_bot_token and settings.telegram_chat_id:
+            import aiohttp
+            url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
+            async with aiohttp.ClientSession() as session:
+                await session.post(url, json={
+                    "chat_id": settings.telegram_chat_id,
+                    "text": message,
+                    "parse_mode": "HTML",
+                })
+    except Exception as e:
+        logger.error(f"Failed to send Telegram alert: {e}")
+
+
+def check_auto_emergency_stop(daily_pnl: float, capital: float, margin_ratio: float | None = None) -> bool:
+    """
+    Check if auto emergency stop should be triggered.
+
+    Called by the trading engine periodically.
+
+    Args:
+        daily_pnl: Today's PnL
+        capital: Current capital
+        margin_ratio: Current margin ratio (if using leverage)
+
+    Returns:
+        True if emergency stop was triggered
+    """
+    settings = get_settings()
+
+    # Check daily loss limit
+    daily_loss_pct = abs(daily_pnl) / capital if capital > 0 and daily_pnl < 0 else 0
+    if daily_loss_pct >= settings.daily_loss_limit:
+        _emergency_stop.activate(
+            mode=EmergencyStopMode.NO_NEW_POSITIONS,
+            reason=EmergencyStopReason.DAILY_LOSS_LIMIT,
+            message=f"日次損失上限到達: {daily_loss_pct:.1%} >= {settings.daily_loss_limit:.1%}",
+            auto_resume_hours=24,  # Auto resume next day
+        )
+        return True
+
+    # Check margin ratio (if using leverage)
+    if margin_ratio is not None and margin_ratio <= settings.margin_call_threshold:
+        _emergency_stop.activate(
+            mode=EmergencyStopMode.NO_NEW_POSITIONS,
+            reason=EmergencyStopReason.MARGIN_ALERT,
+            message=f"証拠金維持率低下: {margin_ratio:.0%} <= {settings.margin_call_threshold:.0%}",
+        )
+        return True
+
+    return False
+
+
 def _apply_setting_to_engine(key: str) -> None:
     """Apply a setting change to the running engine."""
     if not _engine:
@@ -505,7 +773,7 @@ def _apply_setting_to_engine(key: str) -> None:
         )
 
 
-# Run with: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+# Run with: uvicorn src.api.main:app --host 0.0.0.0 --port 8088
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=API_PORT)

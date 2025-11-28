@@ -236,6 +236,76 @@
             color: white;
         }
 
+        .btn-danger:hover {
+            opacity: 0.9;
+        }
+
+        .btn-warning {
+            background: var(--accent-yellow);
+            color: #1a1a2e;
+        }
+
+        .btn-warning:hover {
+            opacity: 0.9;
+        }
+
+        .emergency-panel {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 2px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .emergency-panel.active {
+            border-color: var(--accent-red);
+            background: rgba(255, 107, 107, 0.1);
+        }
+
+        .emergency-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .emergency-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .emergency-indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent-green);
+        }
+
+        .emergency-indicator.stopped {
+            background: var(--accent-red);
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .emergency-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .emergency-info {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .emergency-info.warning {
+            color: var(--accent-yellow);
+        }
+
         .trades-table {
             width: 100%;
             border-collapse: collapse;
@@ -361,7 +431,7 @@
         <header>
             <h1>GMO Trading Bot</h1>
             <div class="connection-form">
-                <input type="text" id="apiUrl" placeholder="API URL (例: http://vps-ip:8000)" value="http://localhost:8000">
+                <input type="text" id="apiUrl" placeholder="API URL (例: http://vps-ip:8088)" value="http://localhost:8088">
                 <button class="btn btn-primary" onclick="connect()">接続</button>
                 <div class="status-indicator">
                     <span class="status-dot" id="statusDot"></span>
@@ -378,6 +448,24 @@
 
         <!-- Dashboard Tab -->
         <div id="dashboard" class="tab-content active">
+            <!-- Emergency Stop Panel -->
+            <div class="emergency-panel" id="emergencyPanel">
+                <div class="emergency-header">
+                    <div class="emergency-status">
+                        <span class="emergency-indicator" id="emergencyIndicator"></span>
+                        <strong id="emergencyStatusText">通常稼働中</strong>
+                    </div>
+                    <div class="emergency-buttons">
+                        <button class="btn btn-warning" onclick="emergencyStop('no_new_positions')">新規停止</button>
+                        <button class="btn btn-danger" onclick="emergencyStop('full_stop')">緊急停止</button>
+                        <button class="btn btn-primary" onclick="resumeTrading()" id="resumeBtn" style="display: none;">再開</button>
+                    </div>
+                </div>
+                <div class="emergency-info" id="emergencyInfo">
+                    取引は正常に行われています
+                </div>
+            </div>
+
             <div class="grid">
                 <div class="card">
                     <div class="card-title">総資産</div>
@@ -537,10 +625,11 @@
     <div class="toast" id="toast"></div>
 
     <script>
-        let apiUrl = 'http://localhost:8000';
+        let apiUrl = 'http://localhost:8088';
         let isConnected = false;
         let pnlChart = null;
         let refreshInterval = null;
+        let emergencyState = null;
 
         function showToast(message, isError = false) {
             const toast = document.getElementById('toast');
@@ -628,6 +717,110 @@
             dailyPnlEl.className = 'card-value ' + (data.daily_pnl >= 0 ? 'positive' : 'negative');
 
             document.getElementById('dailyTrades').textContent = `取引数: ${data.daily_trades}`;
+
+            // Update emergency stop status
+            if (data.emergency_stop) {
+                updateEmergencyPanel(data.emergency_stop);
+            }
+        }
+
+        function updateEmergencyPanel(emergency) {
+            emergencyState = emergency;
+            const panel = document.getElementById('emergencyPanel');
+            const indicator = document.getElementById('emergencyIndicator');
+            const statusText = document.getElementById('emergencyStatusText');
+            const info = document.getElementById('emergencyInfo');
+            const resumeBtn = document.getElementById('resumeBtn');
+
+            if (emergency.is_active) {
+                panel.classList.add('active');
+                indicator.classList.add('stopped');
+                resumeBtn.style.display = 'inline-block';
+
+                if (emergency.mode === 'full_stop') {
+                    statusText.textContent = '緊急停止中';
+                    info.textContent = `理由: ${emergency.reason || '手動'} - ${emergency.message || '全取引停止'}`;
+                } else if (emergency.mode === 'no_new_positions') {
+                    statusText.textContent = '新規取引停止中';
+                    info.textContent = `理由: ${emergency.reason || '手動'} - ${emergency.message || '新規ポジション作成を停止'}`;
+                }
+                info.classList.add('warning');
+
+                if (emergency.auto_resume_at) {
+                    const resumeTime = new Date(emergency.auto_resume_at).toLocaleString('ja-JP');
+                    info.textContent += ` (自動再開: ${resumeTime})`;
+                }
+            } else {
+                panel.classList.remove('active');
+                indicator.classList.remove('stopped');
+                statusText.textContent = '通常稼働中';
+                info.textContent = '取引は正常に行われています';
+                info.classList.remove('warning');
+                resumeBtn.style.display = 'none';
+            }
+        }
+
+        async function emergencyStop(mode) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            const modeText = mode === 'full_stop' ? '緊急停止（全ポジション決済）' : '新規取引停止';
+            if (!confirm(`${modeText}を実行しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mode: mode,
+                        reason: 'manual',
+                        message: 'ダッシュボードから手動で停止',
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${modeText}を実行しました`);
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        async function resumeTrading() {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            if (!confirm('取引を再開しますか？')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/resume`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast('取引を再開しました');
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
         }
 
         function updatePnL(data) {

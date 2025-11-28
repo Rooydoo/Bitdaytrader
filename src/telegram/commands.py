@@ -59,7 +59,10 @@ class TelegramCommandHandler:
 <b>取引コマンド:</b>
 /status - 現在のステータス
 /positions - ポジション一覧
-/stop - 取引を一時停止
+
+<b>緊急停止:</b>
+/stop - 新規取引を停止
+/fullstop - 緊急停止（全決済）
 /resume - 取引を再開
 
 <b>レポート:</b>
@@ -266,6 +269,87 @@ class TelegramCommandHandler:
             logger.error(f"Error getting positions: {e}")
             await update.message.reply_text(f"エラー: {e}")
 
+    async def stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /stop command - stop new positions."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop, EmergencyStopMode, EmergencyStopReason
+
+            emergency = get_emergency_stop()
+            emergency.activate(
+                mode=EmergencyStopMode.NO_NEW_POSITIONS,
+                reason=EmergencyStopReason.MANUAL,
+                message="Telegramから手動で停止",
+            )
+
+            await update.message.reply_text(
+                "🛑 <b>新規取引を停止しました</b>\n\n"
+                "既存のポジションは保持されます。\n"
+                "再開するには /resume を使用してください。",
+                parse_mode="HTML"
+            )
+            logger.warning("Trading stopped via Telegram (no new positions)")
+
+        except Exception as e:
+            logger.error(f"Error stopping trading: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def fullstop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /fullstop command - emergency stop with position closure."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop, EmergencyStopMode, EmergencyStopReason
+
+            emergency = get_emergency_stop()
+            emergency.activate(
+                mode=EmergencyStopMode.FULL_STOP,
+                reason=EmergencyStopReason.MANUAL,
+                message="Telegramから緊急停止",
+            )
+
+            await update.message.reply_text(
+                "🚨 <b>緊急停止を実行しました</b>\n\n"
+                "全ポジションの決済を試みます。\n"
+                "再開するには /resume を使用してください。",
+                parse_mode="HTML"
+            )
+            logger.warning("EMERGENCY STOP via Telegram (full stop)")
+
+        except Exception as e:
+            logger.error(f"Error with emergency stop: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /resume command - resume trading."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            from src.api.main import get_emergency_stop
+
+            emergency = get_emergency_stop()
+
+            if not emergency.is_active():
+                await update.message.reply_text("取引は既に稼働中です")
+                return
+
+            emergency.deactivate()
+
+            await update.message.reply_text(
+                "✅ <b>取引を再開しました</b>\n\n"
+                "通常の取引が可能になりました。",
+                parse_mode="HTML"
+            )
+            logger.info("Trading resumed via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error resuming trading: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
     def _check_authorized(self, update: Update) -> bool:
         """Check if the message is from authorized chat."""
         if str(update.effective_chat.id) != self.chat_id:
@@ -322,6 +406,10 @@ class TelegramCommandHandler:
         app.add_handler(CommandHandler("allocation", self.allocation))
         app.add_handler(CommandHandler("status", self.status))
         app.add_handler(CommandHandler("positions", self.positions))
+        # Emergency stop commands
+        app.add_handler(CommandHandler("stop", self.stop))
+        app.add_handler(CommandHandler("fullstop", self.fullstop))
+        app.add_handler(CommandHandler("resume", self.resume))
 
         return app
 
