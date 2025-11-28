@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Any
 
 import psutil
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from config.settings import get_settings
 from src.settings.runtime import get_runtime_settings
+from src.metrics.collector import get_metrics_collector
 
 
 class ConnectionManager:
@@ -109,6 +111,39 @@ app = FastAPI(
     description="API for monitoring and configuring the trading bot",
     version="1.0.0",
 )
+
+
+# ============================================
+# Metrics Middleware
+# ============================================
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Middleware to track API request metrics."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip metrics endpoint to avoid recursion
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
+        start_time = time.time()
+
+        response = await call_next(request)
+
+        # Record metrics
+        latency = time.time() - start_time
+        metrics = get_metrics_collector()
+        metrics.record_api_request(
+            method=request.method,
+            endpoint=request.url.path,
+            status_code=response.status_code,
+            latency=latency,
+        )
+
+        return response
+
+
+# Add metrics middleware
+app.add_middleware(MetricsMiddleware)
 
 
 class EmergencyStopMode(str, Enum):
@@ -524,6 +559,90 @@ async def health_check_simple():
         return {"status": "ok", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ============================================
+# Prometheus Metrics Endpoint
+# ============================================
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """
+    Prometheus metrics endpoint.
+
+    Returns metrics in Prometheus text format for scraping.
+    """
+    metrics = get_metrics_collector()
+
+    # Update trading stats if engine is available
+    if _engine:
+        try:
+            stats = _engine.risk_manager.get_daily_stats()
+            capital = _engine._get_capital()
+
+            # Get weekly/monthly PnL
+            trades = _engine.trade_repo.get_recent_trades(limit=1000)
+            now = datetime.now()
+            week_ago = now - timedelta(days=7)
+            month_ago = now - timedelta(days=30)
+
+            weekly_pnl = sum(t.pnl for t in trades if t.pnl and t.exit_time and t.exit_time >= week_ago)
+            monthly_pnl = sum(t.pnl for t in trades if t.pnl and t.exit_time and t.exit_time >= month_ago)
+            total_pnl = sum(t.pnl for t in trades if t.pnl)
+
+            wins = sum(1 for t in trades if t.pnl and t.pnl > 0)
+            losses = sum(1 for t in trades if t.pnl and t.pnl < 0)
+            win_rate = wins / (wins + losses) if (wins + losses) > 0 else 0.0
+
+            gross_profit = sum(t.pnl for t in trades if t.pnl and t.pnl > 0)
+            gross_loss = abs(sum(t.pnl for t in trades if t.pnl and t.pnl < 0))
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+            drawdown = stats.get("drawdown", {}).get("current_drawdown", 0.0) * 100
+            consecutive_losses = stats.get("drawdown", {}).get("consecutive_losses", 0)
+
+            metrics.update_trading_stats(
+                capital=capital,
+                daily_pnl=stats["total"]["pnl"],
+                weekly_pnl=weekly_pnl,
+                monthly_pnl=monthly_pnl,
+                total_pnl=total_pnl,
+                win_rate=win_rate,
+                profit_factor=profit_factor,
+                drawdown=drawdown,
+                consecutive_losses=consecutive_losses,
+            )
+
+            # Update positions
+            open_trades = _engine.trade_repo.get_open_trades()
+            positions = [{"symbol": t.symbol, "side": t.side} for t in open_trades]
+            metrics.update_positions(positions)
+
+        except Exception as e:
+            logger.warning(f"Failed to update trading metrics: {e}")
+
+    # Update emergency stop status
+    metrics.update_emergency_stop(
+        active=_emergency_stop.is_active(),
+        long_stopped=_emergency_stop.long_stopped,
+        short_stopped=_emergency_stop.short_stopped,
+    )
+
+    # Update WebSocket connections
+    metrics.update_websocket_connections(len(ws_manager.active_connections))
+
+    # Set bot info
+    settings = get_settings()
+    rs = get_runtime_settings()
+    mode = rs.get("mode", settings.mode)
+    metrics.set_info(mode=mode)
+
+    # Generate metrics
+    content = metrics.generate_metrics()
+    return Response(
+        content=content,
+        media_type=metrics.get_content_type(),
+    )
 
 
 # Helper function for WebSocket broadcasts

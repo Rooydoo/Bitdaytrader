@@ -1,0 +1,60 @@
+# Prometheus configuration for GMO Trading Bot
+# Place this file at /etc/prometheus/prometheus.yml or your Prometheus config directory
+
+global:
+  scrape_interval: 15s  # Default scrape interval
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+# rule_files:
+#   - "alert_rules.yml"
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # GMO Trading Bot API
+  - job_name: 'gmo-trading-bot'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:8088']
+    scrape_interval: 10s  # More frequent for trading metrics
+    scrape_timeout: 5s
+
+# Example alert rules (create separate file alert_rules.yml):
+# groups:
+#   - name: trading_alerts
+#     rules:
+#       - alert: HighDrawdown
+#         expr: trading_drawdown_percent > 10
+#         for: 5m
+#         labels:
+#           severity: warning
+#         annotations:
+#           summary: "High drawdown detected"
+#           description: "Drawdown is {{ $value }}%"
+#
+#       - alert: EmergencyStopActive
+#         expr: emergency_stop_active == 1
+#         for: 1m
+#         labels:
+#           severity: critical
+#         annotations:
+#           summary: "Emergency stop is active"
+#
+#       - alert: ConsecutiveLosses
+#         expr: trading_consecutive_losses >= 3
+#         for: 0m
+#         labels:
+#           severity: warning
+#         annotations:
+#           summary: "3+ consecutive losses detected"
