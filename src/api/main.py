@@ -1,9 +1,13 @@
 """FastAPI backend for web dashboard."""
 
+import os
+import time
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
+import psutil
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
@@ -270,10 +274,171 @@ def get_engine() -> Any:
     return _engine
 
 
+class HealthCheckResponse(BaseModel):
+    """Response model for health check."""
+    status: str  # healthy, degraded, unhealthy
+    timestamp: str
+    uptime_seconds: float
+    checks: dict[str, dict[str, Any]]
+    system: dict[str, Any]
+
+
+# Track API start time for uptime calculation
+_api_start_time = time.time()
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {"message": "GMO Trading Bot API", "status": "running"}
+
+
+@app.get("/api/health", response_model=HealthCheckResponse)
+async def health_check():
+    """
+    Comprehensive health check endpoint.
+
+    Checks:
+    - API responsiveness
+    - Database connectivity
+    - GMO API connectivity
+    - Engine status
+    - System resources (memory, CPU, disk)
+    """
+    checks = {}
+    overall_status = "healthy"
+
+    # Check 1: Database connectivity
+    try:
+        from src.database.session import SessionLocal
+        db = SessionLocal()
+        db.execute("SELECT 1")
+        db.close()
+        checks["database"] = {"status": "ok", "message": "Database connection successful"}
+    except Exception as e:
+        checks["database"] = {"status": "error", "message": str(e)}
+        overall_status = "degraded"
+
+    # Check 2: GMO API connectivity
+    try:
+        settings = get_settings()
+        if settings.gmo_api_key and settings.gmo_api_secret:
+            from src.api.gmo_client import GMOCoinClient
+            client = GMOCoinClient(
+                api_key=settings.gmo_api_key,
+                api_secret=settings.gmo_api_secret,
+            )
+            # Just try to get ticker (public API, no auth needed)
+            ticker = client.get_ticker("BTC_JPY")
+            client.close()
+            checks["gmo_api"] = {
+                "status": "ok",
+                "message": "GMO API reachable",
+                "btc_price": ticker.last,
+            }
+        else:
+            checks["gmo_api"] = {"status": "warning", "message": "API keys not configured"}
+            if overall_status == "healthy":
+                overall_status = "degraded"
+    except Exception as e:
+        checks["gmo_api"] = {"status": "error", "message": str(e)}
+        overall_status = "degraded"
+
+    # Check 3: Trading engine status
+    if _engine:
+        try:
+            capital = _engine._get_capital()
+            risk_stats = _engine.risk_manager.get_daily_stats()
+            checks["engine"] = {
+                "status": "ok",
+                "message": "Engine running",
+                "capital": capital,
+                "daily_trades": risk_stats["total"]["trades"],
+                "daily_pnl": risk_stats["total"]["pnl"],
+            }
+        except Exception as e:
+            checks["engine"] = {"status": "error", "message": str(e)}
+            overall_status = "degraded"
+    else:
+        checks["engine"] = {"status": "warning", "message": "Engine not attached"}
+        if overall_status == "healthy":
+            overall_status = "degraded"
+
+    # Check 4: Emergency stop status
+    if _emergency_stop.is_active():
+        checks["emergency_stop"] = {
+            "status": "warning",
+            "message": f"Emergency stop active: {_emergency_stop.mode.value}",
+            "reason": _emergency_stop.reason.value if _emergency_stop.reason else None,
+        }
+        if overall_status == "healthy":
+            overall_status = "degraded"
+    else:
+        direction_stops = []
+        if _emergency_stop.long_stopped:
+            direction_stops.append("LONG")
+        if _emergency_stop.short_stopped:
+            direction_stops.append("SHORT")
+        if direction_stops:
+            checks["emergency_stop"] = {
+                "status": "warning",
+                "message": f"Direction stops active: {', '.join(direction_stops)}",
+            }
+        else:
+            checks["emergency_stop"] = {"status": "ok", "message": "Normal operation"}
+
+    # System resources
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+
+    system_info = {
+        "memory_percent": memory.percent,
+        "memory_available_gb": round(memory.available / (1024**3), 2),
+        "memory_total_gb": round(memory.total / (1024**3), 2),
+        "disk_percent": disk.percent,
+        "disk_free_gb": round(disk.free / (1024**3), 2),
+        "cpu_percent": cpu_percent,
+        "process_memory_mb": round(psutil.Process().memory_info().rss / (1024**2), 2),
+    }
+
+    # Check if system resources are critical
+    if memory.percent > 90 or disk.percent > 95:
+        overall_status = "unhealthy"
+        checks["system_resources"] = {
+            "status": "error",
+            "message": f"Critical: Memory {memory.percent}%, Disk {disk.percent}%"
+        }
+    elif memory.percent > 80 or disk.percent > 85:
+        if overall_status == "healthy":
+            overall_status = "degraded"
+        checks["system_resources"] = {
+            "status": "warning",
+            "message": f"Warning: Memory {memory.percent}%, Disk {disk.percent}%"
+        }
+    else:
+        checks["system_resources"] = {
+            "status": "ok",
+            "message": f"Memory {memory.percent}%, Disk {disk.percent}%"
+        }
+
+    return HealthCheckResponse(
+        status=overall_status,
+        timestamp=datetime.now().isoformat(),
+        uptime_seconds=round(time.time() - _api_start_time, 2),
+        checks=checks,
+        system=system_info,
+    )
+
+
+@app.get("/api/health/simple")
+async def health_check_simple():
+    """Simple health check for load balancers and monitoring tools."""
+    try:
+        # Quick check - just verify API is responsive
+        return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/status", response_model=StatusResponse)
