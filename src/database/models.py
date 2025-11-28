@@ -41,6 +41,7 @@ class Trade(Base):
     take_profit_3 = Column(Float, nullable=True)
     confidence = Column(Float, nullable=True)
     notes = Column(Text, nullable=True)
+    is_paper = Column(Boolean, default=False)  # True for paper trading
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

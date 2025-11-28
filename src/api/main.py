@@ -1099,6 +1099,75 @@ async def get_positions():
         return {"positions": [], "error": str(e)}
 
 
+@app.get("/api/paper/stats")
+async def get_paper_trading_stats():
+    """Get paper trading statistics."""
+    if not _engine:
+        return {"error": "Engine not attached", "stats": None}
+
+    stats = _engine.get_paper_trading_stats()
+    if stats is None:
+        return {
+            "error": "Paper trading not active (mode is not 'paper')",
+            "stats": None,
+            "mode": _engine.settings.mode,
+        }
+
+    return {
+        "stats": stats,
+        "mode": "paper",
+    }
+
+
+@app.get("/api/paper/positions")
+async def get_paper_positions():
+    """Get open paper trading positions."""
+    if not _engine or not _engine.paper_executor:
+        return {"positions": [], "mode": "live"}
+
+    positions = _engine.paper_executor.get_open_positions()
+
+    return {
+        "positions": [
+            {
+                "position_id": p.position_id,
+                "symbol": p.symbol,
+                "side": p.side.value,
+                "entry_price": p.entry_price,
+                "size": p.size,
+                "remaining_size": p.remaining_size,
+                "stop_loss": p.stop_loss,
+                "entry_time": p.entry_time.isoformat(),
+                "realized_pnl": p.realized_pnl,
+                "confidence": p.confidence,
+            }
+            for p in positions
+        ],
+        "mode": "paper",
+    }
+
+
+@app.post("/api/paper/reset")
+async def reset_paper_trading(confirm: bool = False):
+    """Reset paper trading state."""
+    if not confirm:
+        return {
+            "success": False,
+            "message": "Set confirm=true to reset paper trading. This will clear all history!",
+        }
+
+    if not _engine or not _engine.paper_executor:
+        return {"success": False, "message": "Paper trading not active"}
+
+    _engine.paper_executor.reset()
+
+    return {
+        "success": True,
+        "message": "Paper trading state reset",
+        "initial_capital": _engine.paper_executor.initial_capital,
+    }
+
+
 @app.get("/api/model/status")
 async def get_model_status():
     """Get model training status."""

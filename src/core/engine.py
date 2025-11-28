@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -18,6 +19,7 @@ from src.database.models import (
     init_db,
 )
 from src.execution.order_manager import OrderManager, PositionStatus
+from src.execution.paper_executor import PaperTradingExecutor, PaperTradingConfig
 from src.features.calculator import FeatureCalculator
 from src.models.predictor import Predictor
 from src.reports.generator import ReportGenerator
@@ -102,6 +104,23 @@ class TradingEngine:
         # Legacy single order manager (for backward compatibility)
         self.order_manager = OrderManager(self.client, settings.symbol)
 
+        # Paper trading executor (for paper/test mode)
+        self.paper_executor: PaperTradingExecutor | None = None
+        if settings.mode == "paper":
+            paper_config = PaperTradingConfig(
+                initial_capital=1_000_000,  # 1M JPY virtual capital
+                slippage_bps=5.0,
+                limit_fill_probability=0.95,
+                maker_fee=-0.0001,
+                taker_fee=0.0004,
+            )
+            self.paper_executor = PaperTradingExecutor(paper_config)
+
+            # Load saved state if exists
+            paper_state_path = Path("data/paper_trading_state.json")
+            if paper_state_path.exists():
+                self.paper_executor.load_state(str(paper_state_path))
+
         # Initialize Telegram bot
         self.telegram = TelegramBot(
             token=settings.telegram_bot_token,
@@ -138,7 +157,7 @@ class TradingEngine:
                 return
 
             # 2. Check existing position
-            if self.order_manager.has_position():
+            if self._has_open_position():
                 await self._manage_existing_position(df)
             else:
                 await self._check_new_signal(df)
@@ -391,15 +410,57 @@ class TradingEngine:
                     confidence=confidence,
                 )
         else:
-            logger.info(f"Paper trading: Would open {direction} position at {current_price}")
+            # Paper trading mode - simulate trade execution
+            if self.paper_executor:
+                paper_pos = self.paper_executor.open_position(
+                    symbol=self.settings.symbol,
+                    side=side,
+                    size=position.size,
+                    entry_price=current_price,
+                    stop_loss=position.stop_loss,
+                    take_profit_levels=tp_levels,
+                    confidence=confidence,
+                    use_limit_order=True,
+                )
+
+                if paper_pos:
+                    # Record to database with paper flag
+                    self._record_paper_trade_entry(paper_pos)
+
+                    # Send notification with [PAPER] prefix
+                    await self.telegram.notify_trade_opened(
+                        symbol=self.settings.symbol,
+                        side=side,
+                        price=paper_pos.entry_price,
+                        size=position.size,
+                        stop_loss=position.stop_loss,
+                        confidence=confidence,
+                        is_paper=True,
+                    )
+
+                    # Save paper state periodically
+                    self._save_paper_state()
+
+                    logger.info(
+                        f"[PAPER] {direction} position opened: "
+                        f"size={position.size:.6f} @ ¥{paper_pos.entry_price:,.0f}"
+                    )
+            else:
+                logger.info(f"Paper trading: Would open {direction} position at {current_price}")
 
     async def _manage_existing_position(self, df: pd.DataFrame) -> None:
         """Manage existing position."""
+        current_price = df["close"].iloc[-1]
+
+        # Paper trading mode
+        if self.settings.mode == "paper" and self.paper_executor:
+            await self._manage_paper_positions(current_price)
+            return
+
+        # Live trading mode
         position = self.order_manager.current_position
         if position is None:
             return
-
-        current_price = df["close"].iloc[-1]
 
         # Check if entry order is filled
         if position.status == PositionStatus.PENDING:
@@ -446,6 +507,75 @@ class TradingEngine:
                     reason="TP",
                 )
 
+    async def _manage_paper_positions(self, current_price: float) -> None:
+        """Manage paper trading positions."""
+        if not self.paper_executor:
+            return
+
+        current_prices = {self.settings.symbol: current_price}
+
+        # Check stop losses
+        sl_triggers = self.paper_executor.check_stop_losses(current_prices)
+        for trigger in sl_triggers:
+            # Update database
+            self._record_paper_trade_exit(trigger["position_id"], trigger["pnl"], "SL")
+
+            # Track with risk manager
+            side = "BUY" if trigger["side"] == "LONG" else "SELL"
+            self.risk_manager.add_trade_result(trigger["pnl"], side)
+
+            # Notify
+            await self.telegram.notify_stop_loss(
+                symbol=trigger["symbol"],
+                side=side,
+                entry_price=0,  # We don't have this info readily available
+                stop_price=current_price,
+                pnl=trigger["pnl"],
+                is_paper=True,
+            )
+
+        # Check take profits
+        tp_triggers = self.paper_executor.check_take_profits(current_prices)
+        for trigger in tp_triggers:
+            # Update database
+            self._record_paper_trade_exit(trigger["position_id"], trigger["pnl"], "TP")
+
+            # Track with risk manager (only if position fully closed)
+            if not self.paper_executor.get_position(trigger["position_id"]):
+                side = "BUY" if trigger["side"] == "LONG" else "SELL"
+                self.risk_manager.add_trade_result(trigger["pnl"], side)
+
+                await self.telegram.notify_trade_closed(
+                    symbol=trigger["symbol"],
+                    side=side,
+                    entry_price=0,
+                    exit_price=trigger["tp_level"],
+                    pnl=trigger["pnl"],
+                    pnl_percent=0,
+                    reason="TP",
+                    is_paper=True,
+                )
+
+        # Save state after managing positions
+        self._save_paper_state()
+
+    def _record_paper_trade_exit(self, position_id: str, pnl: float, status: str) -> None:
+        """Record paper trade exit to database."""
+        # Find open paper trade by position ID
+        # Note: In a real implementation, we'd store position_id in the Trade model
+        trades = self.trade_repo.get_open_trades()
+        for trade in trades:
+            if trade.is_paper and trade.symbol == self.settings.symbol:
+                self.trade_repo.update(
+                    trade.id,
+                    {
+                        "pnl": pnl,
+                        "exit_time": datetime.now(),
+                        "status": status,
+                    },
+                )
+                break
+
     def _calculate_current_atr(self, df: pd.DataFrame, period: int = 14) -> float | None:
         """Calculate current ATR value."""
         if len(df) < period + 1:
@@ -469,8 +599,40 @@ class TradingEngine:
         if self.settings.mode == "live":
             return self.client.get_jpy_balance()
         else:
-            # Paper trading: use fixed amount
-            return 1_000_000  # 1M JPY
+            # Paper trading: use paper executor's virtual capital
+            if self.paper_executor:
+                return self.paper_executor.get_capital()
+            return 1_000_000  # 1M JPY fallback
+
+    def _has_open_position(self) -> bool:
+        """Check if there are any open positions."""
+        if self.settings.mode == "live":
+            return self.order_manager.has_position()
+        else:
+            if self.paper_executor:
+                return self.paper_executor.has_open_position(self.settings.symbol)
+            return self.order_manager.has_position()
+
+    def _record_paper_trade_entry(self, paper_pos: Any) -> None:
+        """Record paper trade entry to database."""
+        trade = Trade(
+            symbol=paper_pos.symbol,
+            side=paper_pos.side.value,
+            entry_price=paper_pos.entry_price,
+            size=paper_pos.size,
+            stop_loss=paper_pos.stop_loss,
+            status="OPEN",
+            entry_time=paper_pos.entry_time,
+            confidence=paper_pos.confidence,
+            is_paper=True,  # Mark as paper trade
+        )
+        self.session.add(trade)
+        self.session.commit()
+
+    def _save_paper_state(self) -> None:
+        """Save paper trading state to file."""
+        if self.paper_executor:
+            self.paper_executor.save_state("data/paper_trading_state.json")
 
     def _record_signal(
         self,
@@ -634,7 +796,55 @@ class TradingEngine:
         except Exception as e:
             logger.exception(f"Error in retraining check: {e}")
 
+    async def send_paper_trading_report(self) -> None:
+        """Send paper trading performance report."""
+        if not self.paper_executor:
+            logger.warning("Paper executor not available for report")
+            return
+
+        summary = self.paper_executor.get_trade_summary()
+
+        # Format report message
+        message = (
+            f"📊 <b>[PAPER] トレード実績レポート</b>\n\n"
+            f"📅 期間: {summary['session_start'][:10]} 〜 現在\n"
+            f"⏱ 経過時間: {summary['duration_hours']:.1f}時間\n\n"
+            f"💰 <b>資金状況</b>\n"
+            f"初期資金: ¥{summary['initial_capital']:,.0f}\n"
+            f"現在資金: ¥{summary['current_capital']:,.0f}\n"
+            f"最高資金: ¥{summary['peak_capital']:,.0f}\n"
+            f"総損益: ¥{summary['total_pnl']:+,.0f} ({summary['total_return_pct']:+.2f}%)\n"
+            f"最大DD: {summary['max_drawdown_pct']:.2f}%\n\n"
+            f"📈 <b>トレード統計</b>\n"
+            f"総取引数: {summary['total_trades']}\n"
+            f"勝ち: {summary['winning_trades']} / 負け: {summary['losing_trades']}\n"
+            f"勝率: {summary['win_rate']*100:.1f}%\n"
+            f"PF: {summary['profit_factor']:.2f}\n"
+            f"平均損益: ¥{summary['avg_trade_pnl']:+,.0f}\n\n"
+            f"📊 <b>方向別</b>\n"
+            f"LONG: {summary['long_trades']}回 ¥{summary['long_pnl']:+,.0f} "
+            f"(勝率 {summary['long_win_rate']*100:.1f}%)\n"
+            f"SHORT: {summary['short_trades']}回 ¥{summary['short_pnl']:+,.0f} "
+            f"(勝率 {summary['short_win_rate']*100:.1f}%)\n\n"
+            f"💹 オープンポジション: {summary['open_positions']}件\n"
+            f"💳 累積手数料: ¥{summary['total_commission']:,.0f}"
+        )
+
+        await self.telegram.send_message(message)
+        logger.info("Paper trading report sent")
+
+    def get_paper_trading_stats(self) -> dict | None:
+        """Get paper trading statistics for API."""
+        if not self.paper_executor:
+            return None
+        return self.paper_executor.get_trade_summary()
+
     def close(self) -> None:
         """Clean up resources."""
+        # Save paper trading state before closing
+        if self.paper_executor:
+            self._save_paper_state()
+            logger.info("Paper trading state saved")
+
         self.client.close()
         self.session.close()
