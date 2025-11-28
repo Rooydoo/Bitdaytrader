@@ -97,7 +97,7 @@ class ModelTrainer:
         self,
         df: pd.DataFrame,
         n_splits: int = 5,
-    ) -> tuple[lgb.LGBMClassifier, dict[str, Any]]:
+    ) -> tuple[lgb.LGBMClassifier | None, dict[str, Any]]:
         """
         Train model using walk-forward validation.
 
@@ -195,12 +195,12 @@ class ModelTrainer:
         if not results:
             return {}
 
-        agg = {}
+        agg: dict[str, float] = {}
         keys = ["accuracy", "precision", "recall", "auc"]
         for key in keys:
             values = [r[key] for r in results]
-            agg[f"{key}_mean"] = np.mean(values)
-            agg[f"{key}_std"] = np.std(values)
+            agg[f"{key}_mean"] = float(np.mean(values))
+            agg[f"{key}_std"] = float(np.std(values))
 
         return agg
 
