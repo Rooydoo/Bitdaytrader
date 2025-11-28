@@ -81,6 +81,25 @@ class TradingEngine:
             daily_loss_limit=settings.daily_loss_limit,
             max_daily_trades=settings.max_daily_trades,
         )
+
+        # Configure portfolio allocation
+        self.risk_manager.configure_allocation(
+            symbol_allocations=settings.get_symbol_allocations(),
+            total_capital_utilization=settings.total_capital_utilization,
+            long_allocation_ratio=settings.long_allocation_ratio,
+            short_allocation_ratio=settings.short_allocation_ratio,
+        )
+
+        # Store symbols for multi-asset trading
+        self.symbols = list(settings.get_symbol_allocations().keys())
+        self.primary_symbol = settings.symbol  # Legacy fallback
+
+        # Order managers for each symbol
+        self.order_managers: dict[str, OrderManager] = {}
+        for symbol in self.symbols:
+            self.order_managers[symbol] = OrderManager(self.client, symbol)
+
+        # Legacy single order manager (for backward compatibility)
         self.order_manager = OrderManager(self.client, settings.symbol)
 
         # Initialize Telegram bot

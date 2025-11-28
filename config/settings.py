@@ -33,9 +33,32 @@ class Settings(BaseSettings):
     telegram_chat_id: str = Field(default="", description="Telegram Chat ID")
 
     # Trading Settings
-    symbol: str = Field(default="BTC_JPY", description="Trading symbol")
+    symbol: str = Field(default="BTC_JPY", description="Primary trading symbol (legacy)")
     timeframe: str = Field(default="15min", description="Candle timeframe")
     prediction_horizon: int = Field(default=4, description="Prediction horizon (periods)")
+
+    # Portfolio Allocation - Multi-asset support
+    # Format: "SYMBOL:allocation_pct,SYMBOL:allocation_pct" (must sum to 1.0 or less)
+    symbols_config: str = Field(
+        default="BTC_JPY:0.50,ETH_JPY:0.30,XRP_JPY:0.20",
+        description="Symbols with allocation percentages (e.g., BTC_JPY:0.50,ETH_JPY:0.30)"
+    )
+
+    # Capital Utilization - How much of total capital to actually use
+    total_capital_utilization: float = Field(
+        default=0.80,
+        description="Total capital to use for trading (80% = keep 20% cash reserve)"
+    )
+
+    # LONG/SHORT Allocation - How to split between long and short positions
+    long_allocation_ratio: float = Field(
+        default=0.60,
+        description="Portion of capital allocated to LONG positions (60%)"
+    )
+    short_allocation_ratio: float = Field(
+        default=0.40,
+        description="Portion of capital allocated to SHORT positions (40%)"
+    )
 
     # Leverage Settings (GMO Coin margin trading)
     use_leverage: bool = Field(default=True, description="Use leverage/margin trading")
@@ -99,6 +122,56 @@ class Settings(BaseSettings):
     short_tp_ratio_2: float = Field(default=0.3, description="Second TP ratio for SHORT")
     short_tp_level_3: float = Field(default=2.5, description="Third TP level for SHORT (R)")
     short_tp_ratio_3: float = Field(default=0.2, description="Third TP ratio for SHORT")
+
+
+    def get_symbol_allocations(self) -> dict[str, float]:
+        """
+        Parse symbols_config and return dict of symbol -> allocation percentage.
+
+        Example: "BTC_JPY:0.50,ETH_JPY:0.30" -> {"BTC_JPY": 0.50, "ETH_JPY": 0.30}
+        """
+        allocations = {}
+        for item in self.symbols_config.split(","):
+            item = item.strip()
+            if ":" in item:
+                symbol, alloc = item.split(":")
+                allocations[symbol.strip()] = float(alloc.strip())
+        return allocations
+
+    def get_capital_for_symbol(self, symbol: str, total_capital: float) -> float:
+        """
+        Calculate capital allocated to a specific symbol.
+
+        Args:
+            symbol: Trading symbol
+            total_capital: Total available capital
+
+        Returns:
+            Capital allocated to this symbol
+        """
+        allocations = self.get_symbol_allocations()
+        symbol_pct = allocations.get(symbol, 0.0)
+        return total_capital * self.total_capital_utilization * symbol_pct
+
+    def get_capital_for_direction(
+        self, symbol: str, direction: str, total_capital: float
+    ) -> float:
+        """
+        Calculate capital allocated for a specific symbol and direction.
+
+        Args:
+            symbol: Trading symbol
+            direction: "LONG" or "SHORT"
+            total_capital: Total available capital
+
+        Returns:
+            Capital allocated for this symbol and direction
+        """
+        symbol_capital = self.get_capital_for_symbol(symbol, total_capital)
+        if direction == "LONG":
+            return symbol_capital * self.long_allocation_ratio
+        else:  # SHORT
+            return symbol_capital * self.short_allocation_ratio
 
 
 @lru_cache

@@ -122,6 +122,15 @@ class RiskManager:
         self._original_long_config: DirectionConfig | None = None
         self._original_short_config: DirectionConfig | None = None
 
+        # Portfolio allocation settings (set from Settings)
+        self._symbol_allocations: dict[str, float] = {}  # symbol -> allocation %
+        self._total_capital_utilization: float = 1.0  # How much of total capital to use
+        self._long_allocation_ratio: float = 0.6  # LONG portion of allocated capital
+        self._short_allocation_ratio: float = 0.4  # SHORT portion of allocated capital
+
+        # Position tracking per symbol
+        self._symbol_positions: dict[str, dict[str, float]] = {}  # symbol -> {long: value, short: value}
+
     def enable_conservative_mode(self, multiplier: float = 0.5) -> None:
         """
         Enable conservative mode - reduces all risk parameters.
@@ -195,6 +204,155 @@ class RiskManager:
     def is_conservative_mode(self) -> bool:
         """Check if conservative mode is active."""
         return self._conservative_mode
+
+    def configure_allocation(
+        self,
+        symbol_allocations: dict[str, float],
+        total_capital_utilization: float = 0.80,
+        long_allocation_ratio: float = 0.60,
+        short_allocation_ratio: float = 0.40,
+    ) -> None:
+        """
+        Configure portfolio allocation settings.
+
+        Args:
+            symbol_allocations: Dict of symbol -> allocation percentage
+            total_capital_utilization: How much of total capital to use (0.8 = 80%)
+            long_allocation_ratio: Portion for LONG positions (0.6 = 60%)
+            short_allocation_ratio: Portion for SHORT positions (0.4 = 40%)
+        """
+        self._symbol_allocations = symbol_allocations
+        self._total_capital_utilization = total_capital_utilization
+        self._long_allocation_ratio = long_allocation_ratio
+        self._short_allocation_ratio = short_allocation_ratio
+
+        # Initialize position tracking for each symbol
+        for symbol in symbol_allocations:
+            if symbol not in self._symbol_positions:
+                self._symbol_positions[symbol] = {"long": 0.0, "short": 0.0}
+
+        logger.info(
+            f"Portfolio allocation configured: {len(symbol_allocations)} symbols, "
+            f"utilization={total_capital_utilization:.0%}, "
+            f"long/short={long_allocation_ratio:.0%}/{short_allocation_ratio:.0%}"
+        )
+
+    def get_allocated_capital(
+        self,
+        symbol: str,
+        direction: str,
+        total_capital: float,
+    ) -> float:
+        """
+        Calculate allocated capital for a symbol and direction.
+
+        Args:
+            symbol: Trading symbol
+            direction: "LONG" or "SHORT"
+            total_capital: Total available capital
+
+        Returns:
+            Allocated capital for this symbol/direction
+        """
+        # Get symbol allocation (default to 100% if not configured)
+        symbol_pct = self._symbol_allocations.get(symbol, 1.0)
+
+        # Calculate: total * utilization * symbol_pct * direction_ratio
+        usable_capital = total_capital * self._total_capital_utilization
+        symbol_capital = usable_capital * symbol_pct
+
+        if direction == "LONG":
+            return symbol_capital * self._long_allocation_ratio
+        else:  # SHORT
+            return symbol_capital * self._short_allocation_ratio
+
+    def get_remaining_capital(
+        self,
+        symbol: str,
+        direction: str,
+        total_capital: float,
+    ) -> float:
+        """
+        Calculate remaining capital for a symbol/direction after open positions.
+
+        Args:
+            symbol: Trading symbol
+            direction: "LONG" or "SHORT"
+            total_capital: Total available capital
+
+        Returns:
+            Remaining allocable capital
+        """
+        allocated = self.get_allocated_capital(symbol, direction, total_capital)
+        used = self._symbol_positions.get(symbol, {}).get(direction.lower(), 0.0)
+        return max(0.0, allocated - used)
+
+    def update_position(
+        self,
+        symbol: str,
+        direction: str,
+        position_value: float,
+        is_close: bool = False,
+    ) -> None:
+        """
+        Update position tracking when opening/closing positions.
+
+        Args:
+            symbol: Trading symbol
+            direction: "LONG" or "SHORT"
+            position_value: Position value in JPY
+            is_close: True if closing a position
+        """
+        if symbol not in self._symbol_positions:
+            self._symbol_positions[symbol] = {"long": 0.0, "short": 0.0}
+
+        key = direction.lower()
+        if is_close:
+            self._symbol_positions[symbol][key] = max(
+                0.0, self._symbol_positions[symbol][key] - position_value
+            )
+        else:
+            self._symbol_positions[symbol][key] += position_value
+
+        logger.debug(
+            f"Position updated: {symbol} {direction} = ¥{self._symbol_positions[symbol][key]:,.0f}"
+        )
+
+    def get_allocation_summary(self, total_capital: float) -> dict:
+        """
+        Get summary of current allocation status.
+
+        Args:
+            total_capital: Total available capital
+
+        Returns:
+            Dict with allocation details per symbol
+        """
+        summary = {
+            "total_capital": total_capital,
+            "utilization_rate": self._total_capital_utilization,
+            "usable_capital": total_capital * self._total_capital_utilization,
+            "long_ratio": self._long_allocation_ratio,
+            "short_ratio": self._short_allocation_ratio,
+            "symbols": {},
+        }
+
+        for symbol, alloc in self._symbol_allocations.items():
+            symbol_capital = total_capital * self._total_capital_utilization * alloc
+            positions = self._symbol_positions.get(symbol, {"long": 0.0, "short": 0.0})
+
+            summary["symbols"][symbol] = {
+                "allocation_pct": alloc,
+                "allocated_capital": symbol_capital,
+                "long_allocated": symbol_capital * self._long_allocation_ratio,
+                "long_used": positions["long"],
+                "long_remaining": max(0, symbol_capital * self._long_allocation_ratio - positions["long"]),
+                "short_allocated": symbol_capital * self._short_allocation_ratio,
+                "short_used": positions["short"],
+                "short_remaining": max(0, symbol_capital * self._short_allocation_ratio - positions["short"]),
+            }
+
+        return summary
 
     def get_config(self, side: str) -> DirectionConfig:
         """Get configuration for the specified direction."""
@@ -321,21 +479,41 @@ class RiskManager:
         entry_price: float,
         atr: float,
         side: str,
+        symbol: str | None = None,
     ) -> PositionSize:
         """
-        Calculate position size based on direction-specific settings.
+        Calculate position size based on direction-specific settings and allocation.
 
         Args:
-            capital: Available capital
+            capital: Total available capital
             entry_price: Expected entry price
             atr: Current ATR value
             side: "BUY" (LONG) or "SELL" (SHORT)
+            symbol: Trading symbol (for allocation-based sizing)
 
         Returns:
             PositionSize with size, stop loss, and risk details
         """
         config = self.get_config(side)
         direction = "LONG" if side == "BUY" else "SHORT"
+
+        # Get allocated capital for this symbol/direction
+        if symbol and self._symbol_allocations:
+            allocated_capital = self.get_remaining_capital(symbol, direction, capital)
+            if allocated_capital <= 0:
+                logger.warning(
+                    f"No remaining capital for {symbol} {direction} "
+                    f"(allocation exhausted)"
+                )
+                return PositionSize(
+                    size=0.0,
+                    stop_loss=entry_price,
+                    risk_amount=0.0,
+                    position_value=0.0,
+                )
+        else:
+            # Fallback to total capital if no allocation configured
+            allocated_capital = capital
 
         # Calculate stop loss price using direction-specific ATR multiple
         stop_distance = atr * config.sl_atr_multiple
@@ -346,21 +524,22 @@ class RiskManager:
             stop_loss = entry_price + stop_distance
 
         # Calculate risk amount using direction-specific risk per trade
-        risk_amount = capital * config.risk_per_trade
+        # Now based on allocated capital, not total capital
+        risk_amount = allocated_capital * config.risk_per_trade
 
         # Calculate position size based on risk
-        size_by_risk = risk_amount / stop_distance
+        size_by_risk = risk_amount / stop_distance if stop_distance > 0 else 0
 
         # Check direction-specific max position size limit
-        max_position_value = capital * config.max_position_size
-        max_size = max_position_value / entry_price
+        max_position_value = allocated_capital * config.max_position_size
+        max_size = max_position_value / entry_price if entry_price > 0 else 0
 
         # Take the smaller of the two
         final_size = min(size_by_risk, max_size)
         position_value = final_size * entry_price
 
         logger.debug(
-            f"{direction} position size: capital={capital:.0f}, "
+            f"{direction} position size: allocated_capital={allocated_capital:.0f}, "
             f"entry={entry_price:.0f}, atr={atr:.0f}, "
             f"risk_per_trade={config.risk_per_trade:.2%}, "
             f"sl_atr_mult={config.sl_atr_multiple}, "
