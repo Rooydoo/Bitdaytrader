@@ -491,6 +491,50 @@
                 </div>
             </div>
 
+            <!-- Trading Mode Panel -->
+            <div class="card" style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                    <div style="display: flex; align-items: center; gap: 15px;">
+                        <span class="card-title" style="margin: 0;">トレードモード</span>
+                        <div id="currentModeDisplay" style="display: flex; align-items: center; gap: 8px;">
+                            <span class="badge" id="modeBadge" style="font-size: 14px; padding: 6px 12px;">--</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn" id="paperModeBtn" onclick="switchMode('paper')" style="background: var(--accent-blue);">
+                            📊 ペーパー
+                        </button>
+                        <button class="btn" id="liveModeBtn" onclick="switchMode('live')" style="background: var(--accent-green);">
+                            💰 ライブ
+                        </button>
+                    </div>
+                </div>
+                <div id="modeInfo" style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+                    <!-- Mode info will be populated here -->
+                </div>
+                <!-- Paper trading stats (shown only in paper mode) -->
+                <div id="paperStats" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border-color);">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px;">
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">仮想資金</div>
+                            <div id="paperCapital" style="font-size: 16px; font-weight: 600;">¥0</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">総損益</div>
+                            <div id="paperPnl" style="font-size: 16px; font-weight: 600;">¥0</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">取引数</div>
+                            <div id="paperTrades" style="font-size: 16px; font-weight: 600;">0</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">勝率</div>
+                            <div id="paperWinRate" style="font-size: 16px; font-weight: 600;">--%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="grid">
                 <div class="card">
                     <div class="card-title">総資産</div>
@@ -693,6 +737,9 @@
 
                     // Initial data load
                     await refreshData();
+
+                    // Fetch trading mode
+                    await fetchMode();
 
                     // Fallback: poll every 30 seconds in case WebSocket disconnects
                     if (refreshInterval) clearInterval(refreshInterval);
@@ -1076,6 +1123,116 @@
                 if (data.success) {
                     showToast(`${dirText}取引を再開しました`);
                     updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        // ============================================
+        // Trading Mode Functions
+        // ============================================
+
+        let currentMode = 'paper';
+
+        async function fetchMode() {
+            if (!isConnected) return;
+
+            try {
+                const response = await fetch(`${apiUrl}/api/mode`);
+                const data = await response.json();
+                updateModeDisplay(data.mode, data.paper_stats);
+            } catch (e) {
+                console.error('Failed to fetch mode:', e);
+            }
+        }
+
+        function updateModeDisplay(mode, paperStats) {
+            currentMode = mode;
+            const badge = document.getElementById('modeBadge');
+            const modeInfo = document.getElementById('modeInfo');
+            const paperModeBtn = document.getElementById('paperModeBtn');
+            const liveModeBtn = document.getElementById('liveModeBtn');
+            const paperStatsDiv = document.getElementById('paperStats');
+
+            // Update badge
+            if (mode === 'paper') {
+                badge.textContent = '📊 ペーパー';
+                badge.style.background = 'rgba(77, 171, 247, 0.2)';
+                badge.style.color = 'var(--accent-blue)';
+                modeInfo.innerHTML = '仮想取引モード - 実際の資金は使用されません';
+                paperModeBtn.style.opacity = '0.5';
+                liveModeBtn.style.opacity = '1';
+            } else {
+                badge.textContent = '💰 ライブ';
+                badge.style.background = 'rgba(0, 208, 156, 0.2)';
+                badge.style.color = 'var(--accent-green)';
+                modeInfo.innerHTML = '<span style="color: var(--accent-yellow);">⚠️ 本番モード - 実際の資金を使用しています</span>';
+                paperModeBtn.style.opacity = '1';
+                liveModeBtn.style.opacity = '0.5';
+            }
+
+            // Update paper stats display
+            if (mode === 'paper' && paperStats) {
+                paperStatsDiv.style.display = 'block';
+                document.getElementById('paperCapital').textContent = formatCurrency(paperStats.current_capital);
+
+                const pnlEl = document.getElementById('paperPnl');
+                pnlEl.textContent = formatCurrency(paperStats.total_pnl);
+                pnlEl.style.color = paperStats.total_pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+
+                document.getElementById('paperTrades').textContent = paperStats.total_trades;
+                document.getElementById('paperWinRate').textContent = `${(paperStats.win_rate * 100).toFixed(1)}%`;
+            } else {
+                paperStatsDiv.style.display = 'none';
+            }
+        }
+
+        async function switchMode(newMode) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            if (newMode === currentMode) {
+                showToast(`既に${newMode.toUpperCase()}モードです`);
+                return;
+            }
+
+            // Confirm for live mode
+            if (newMode === 'live') {
+                const confirmed = confirm(
+                    '⚠️ ライブモードに切り替えますか？\n\n' +
+                    '実際の資金を使用して取引を行います。\n' +
+                    'ペーパートレードの結果を確認してから切り替えることをお勧めします。'
+                );
+                if (!confirmed) return;
+
+                // Double confirm
+                const doubleConfirm = confirm(
+                    '本当にライブモードに切り替えますか？\n\n' +
+                    'この操作は実際の資金に影響します。'
+                );
+                if (!doubleConfirm) return;
+            }
+
+            try {
+                const confirm_param = newMode === 'live' ? '&confirm=true' : '';
+                const response = await fetch(`${apiUrl}/api/mode?mode=${newMode}${confirm_param}`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${newMode.toUpperCase()}モードに切り替えました`);
+                    fetchMode();
+
+                    if (data.restart_required) {
+                        showToast('完全な切り替えにはボットの再起動が必要です', false);
+                    }
                 } else {
                     showToast(`エラー: ${data.message}`, true);
                 }

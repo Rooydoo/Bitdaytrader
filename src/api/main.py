@@ -867,6 +867,77 @@ async def reset_setting(key: str):
     return {"success": True, "message": message}
 
 
+@app.get("/api/mode")
+async def get_trading_mode():
+    """Get current trading mode."""
+    settings = get_settings()
+    rs = get_runtime_settings()
+
+    current_mode = rs.get("mode", settings.mode)
+
+    # Get paper trading stats if in paper mode
+    paper_stats = None
+    if current_mode == "paper" and _engine and _engine.paper_executor:
+        paper_stats = _engine.paper_executor.get_statistics()
+
+    return {
+        "mode": current_mode,
+        "available_modes": ["paper", "live"],
+        "paper_stats": paper_stats,
+    }
+
+
+@app.post("/api/mode")
+async def set_trading_mode(mode: str, confirm: bool = False):
+    """
+    Switch trading mode.
+
+    WARNING: Switching to live mode will use real money!
+    Set confirm=true when switching to live mode.
+    """
+    if mode not in ["paper", "live"]:
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'paper' or 'live'")
+
+    # Require confirmation for live mode
+    if mode == "live" and not confirm:
+        return {
+            "success": False,
+            "message": "ライブモードへの切り替えには confirm=true が必要です。実際の資金を使用します！",
+            "requires_confirmation": True,
+        }
+
+    rs = get_runtime_settings()
+    old_mode = rs.get("mode", "paper")
+
+    # Set new mode
+    success, message = rs.set("mode", mode)
+
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+
+    # Send notification about mode change
+    if old_mode != mode:
+        try:
+            await _send_emergency_alert(
+                f"🔄 モード変更: {old_mode.upper()} → {mode.upper()}\n"
+                f"{'⚠️ 実際の資金を使用します！' if mode == 'live' else '📊 仮想取引モードです'}"
+            )
+        except Exception:
+            pass
+
+    # Note: Full mode switch requires restart for paper_executor initialization
+    restart_required = (old_mode == "paper" and mode == "live") or (old_mode == "live" and mode == "paper")
+
+    return {
+        "success": True,
+        "mode": mode,
+        "previous_mode": old_mode,
+        "message": f"モードを {mode.upper()} に変更しました",
+        "restart_required": restart_required,
+        "restart_message": "完全な切り替えにはボットの再起動が必要です" if restart_required else None,
+    }
+
+
 @app.get("/api/allocation", response_model=AllocationResponse)
 async def get_allocation():
     """Get current capital allocation."""
