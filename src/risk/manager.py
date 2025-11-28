@@ -8,6 +8,20 @@ from loguru import logger
 
 
 @dataclass
+class LosingStreakConfig:
+    """Configuration for losing streak risk reduction."""
+
+    # At how many consecutive losses to start reducing risk
+    start_reduction_at: int = 2
+    # Reduction per additional loss (e.g., 0.20 = 20% reduction per loss)
+    reduction_per_loss: float = 0.20
+    # Minimum risk multiplier (floor)
+    min_risk_multiplier: float = 0.30
+    # After how many consecutive wins to fully recover
+    wins_to_recover: int = 2
+
+
+@dataclass
 class DrawdownState:
     """Tracks drawdown across different time periods."""
 
@@ -28,6 +42,7 @@ class DrawdownState:
     # Losing streak tracking
     consecutive_losses: int = 0
     max_consecutive_losses: int = 0
+    consecutive_wins: int = 0  # Track wins after a losing streak
 
     @property
     def current_drawdown(self) -> float:
@@ -125,6 +140,8 @@ class RiskManager:
         max_drawdown_limit: float = 0.15,
         max_daily_trades: int = 5,
         max_consecutive_losses: int = 5,
+        # Losing streak risk reduction settings
+        losing_streak_config: LosingStreakConfig | None = None,
     ) -> None:
         """
         Initialize risk manager with direction-specific settings.
@@ -138,6 +155,7 @@ class RiskManager:
             max_drawdown_limit: Max drawdown from peak capital (default: 15%)
             max_daily_trades: Max total trades per day
             max_consecutive_losses: Stop after N consecutive losses (default: 5)
+            losing_streak_config: Configuration for losing streak risk reduction
         """
         # LONG configuration
         self.long_config = DirectionConfig(
@@ -178,6 +196,9 @@ class RiskManager:
 
         # Drawdown tracking
         self._drawdown = DrawdownState()
+
+        # Losing streak risk reduction
+        self.losing_streak_config = losing_streak_config or LosingStreakConfig()
 
         # Conservative mode (activated when overfitting detected)
         self._conservative_mode = False
@@ -494,6 +515,44 @@ class RiskManager:
         self._check_and_reset_weekly(capital)
         self._check_and_reset_monthly(capital)
 
+    def get_losing_streak_multiplier(self) -> float:
+        """
+        Calculate risk multiplier based on losing streak.
+
+        The multiplier reduces position sizes during losing streaks
+        and recovers after winning trades.
+
+        Returns:
+            Multiplier between min_risk_multiplier and 1.0
+        """
+        config = self.losing_streak_config
+        losses = self._drawdown.consecutive_losses
+        wins = self._drawdown.consecutive_wins
+
+        # If we've had enough wins after a streak, full recovery
+        if wins >= config.wins_to_recover:
+            return 1.0
+
+        # If not enough consecutive losses, no reduction
+        if losses < config.start_reduction_at:
+            return 1.0
+
+        # Calculate reduction based on losses beyond threshold
+        excess_losses = losses - config.start_reduction_at + 1
+        reduction = excess_losses * config.reduction_per_loss
+        multiplier = 1.0 - reduction
+
+        # Apply floor
+        multiplier = max(multiplier, config.min_risk_multiplier)
+
+        if multiplier < 1.0:
+            logger.info(
+                f"Losing streak risk reduction: {losses} consecutive losses, "
+                f"risk multiplier = {multiplier:.1%}"
+            )
+
+        return multiplier
+
     def add_trade_result(self, pnl: float, side: str, capital: float | None = None) -> None:
         """
         Record a trade result.
@@ -521,10 +580,19 @@ class RiskManager:
         stats.pnl += pnl
         if pnl > 0:
             stats.wins += 1
+            # Track consecutive wins for recovery
+            self._drawdown.consecutive_wins += 1
             # Reset consecutive losses on win
+            if self._drawdown.consecutive_losses > 0:
+                logger.info(
+                    f"Winning trade after {self._drawdown.consecutive_losses} losses, "
+                    f"consecutive wins: {self._drawdown.consecutive_wins}"
+                )
             self._drawdown.consecutive_losses = 0
         else:
             stats.losses += 1
+            # Reset consecutive wins on loss
+            self._drawdown.consecutive_wins = 0
             # Track consecutive losses
             self._drawdown.consecutive_losses += 1
             self._drawdown.max_consecutive_losses = max(
@@ -695,15 +763,20 @@ class RiskManager:
         else:
             stop_loss = entry_price + stop_distance
 
+        # Get losing streak multiplier (reduces risk during losing streaks)
+        streak_multiplier = self.get_losing_streak_multiplier()
+
         # Calculate risk amount using direction-specific risk per trade
-        # Now based on allocated capital, not total capital
-        risk_amount = allocated_capital * config.risk_per_trade
+        # Apply losing streak multiplier for dynamic risk reduction
+        base_risk_per_trade = config.risk_per_trade
+        adjusted_risk_per_trade = base_risk_per_trade * streak_multiplier
+        risk_amount = allocated_capital * adjusted_risk_per_trade
 
         # Calculate position size based on risk
         size_by_risk = risk_amount / stop_distance if stop_distance > 0 else 0
 
-        # Check direction-specific max position size limit
-        max_position_value = allocated_capital * config.max_position_size
+        # Check direction-specific max position size limit (also apply streak multiplier)
+        max_position_value = allocated_capital * config.max_position_size * streak_multiplier
         max_size = max_position_value / entry_price if entry_price > 0 else 0
 
         # Take the smaller of the two
@@ -713,7 +786,7 @@ class RiskManager:
         logger.debug(
             f"{direction} position size: allocated_capital={allocated_capital:.0f}, "
             f"entry={entry_price:.0f}, atr={atr:.0f}, "
-            f"risk_per_trade={config.risk_per_trade:.2%}, "
+            f"risk_per_trade={adjusted_risk_per_trade:.2%} (base: {base_risk_per_trade:.2%}, streak mult: {streak_multiplier:.1%}), "
             f"sl_atr_mult={config.sl_atr_multiple}, "
             f"size={final_size:.6f}"
         )
@@ -777,7 +850,9 @@ class RiskManager:
             "monthly_limit": self.monthly_loss_limit,
             "max_drawdown_limit": self.max_drawdown_limit,
             "consecutive_losses": self._drawdown.consecutive_losses,
+            "consecutive_wins": self._drawdown.consecutive_wins,
             "max_consecutive_losses_limit": self.max_consecutive_losses,
+            "losing_streak_multiplier": self.get_losing_streak_multiplier(),
             "week_start_date": self._drawdown.week_start_date.isoformat() if self._drawdown.week_start_date else None,
             "month_start_date": self._drawdown.month_start_date.isoformat() if self._drawdown.month_start_date else None,
         }
