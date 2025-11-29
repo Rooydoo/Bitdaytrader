@@ -24,6 +24,13 @@ help:
 	@echo "  run              Run trading cycle (VPS)"
 	@echo "  run-paper        Run in paper trading mode"
 	@echo ""
+	@echo "Paper Trading Test:"
+	@echo "  paper-test-setup Setup 1-month paper trading test"
+	@echo "  paper-cron-setup Show cron setup for paper trading"
+	@echo "  paper-status     Show current paper trading status"
+	@echo "  paper-logs       Show recent paper trading logs"
+	@echo "  paper-reset      Reset paper trading state"
+	@echo ""
 	@echo "Training (local PC):"
 	@echo "  fetch-data       Fetch historical data from GMO"
 	@echo "  train            Train LightGBM model"
@@ -93,6 +100,64 @@ run:
 
 run-paper:
 	MODE=paper python -m src.main
+
+# Paper Trading Test (1 month)
+paper-test-setup:
+	@echo "=== Paper Trading 1-Month Test Setup ==="
+	@echo ""
+	@echo "This will start a simulated trading test with:"
+	@echo "  - Initial capital: 1,000,000 JPY (virtual)"
+	@echo "  - Duration: 1 month continuous"
+	@echo "  - Mode: Paper (no real money)"
+	@echo ""
+	@mkdir -p data logs
+	@rm -f data/paper_trading_state.json
+	@echo "Ready for paper trading test."
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Set up cron: make paper-cron-setup"
+	@echo "  2. Check status: make paper-status"
+	@echo "  3. View logs: make paper-logs"
+
+paper-cron-setup:
+	@echo "Add this line to your crontab (crontab -e):"
+	@echo ""
+	@echo "# Bitdaytrader Paper Trading Test (every 15 min)"
+	@echo "*/15 * * * * cd $$(pwd) && MODE=paper .venv/bin/python -m src.main >> logs/paper_test.log 2>&1"
+	@echo ""
+	@echo "To edit crontab, run: crontab -e"
+
+paper-status:
+	@echo "=== Paper Trading Status ==="
+	@if [ -f data/paper_trading_state.json ]; then \
+		python3 -c "import json; d=json.load(open('data/paper_trading_state.json')); \
+		print(f\"Session start: {d['session_start']}\"); \
+		print(f\"Initial capital: ¥{d['initial_capital']:,.0f}\"); \
+		print(f\"Current capital: ¥{d['current_capital']:,.0f}\"); \
+		print(f\"Peak capital: ¥{d['peak_capital']:,.0f}\"); \
+		print(f\"Total PnL: ¥{d['total_pnl']:+,.0f}\"); \
+		print(f\"Total trades: {d['total_trades']}\"); \
+		print(f\"Win/Loss: {d['winning_trades']}/{d['losing_trades']}\"); \
+		wr = d['winning_trades']/d['total_trades']*100 if d['total_trades']>0 else 0; \
+		print(f\"Win rate: {wr:.1f}%\"); \
+		print(f\"Commission: ¥{d['total_commission']:,.0f}\"); \
+		"; \
+	else \
+		echo "No paper trading data found."; \
+		echo "Run 'make paper-test-setup' then set up cron."; \
+	fi
+
+paper-logs:
+	@if [ -f logs/paper_test.log ]; then \
+		tail -50 logs/paper_test.log; \
+	else \
+		echo "No paper trading logs found."; \
+	fi
+
+paper-reset:
+	@echo "Resetting paper trading state..."
+	@rm -f data/paper_trading_state.json
+	@echo "Done. Paper trading will start fresh on next cycle."
 
 # Training (local PC)
 fetch-data:

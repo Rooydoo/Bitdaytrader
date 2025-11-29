@@ -9,6 +9,7 @@ import pandas as pd
 from loguru import logger
 
 from config.settings import Settings
+from src.utils.timezone import now_jst, JST
 from src.api.gmo_client import GMOCoinClient
 from src.database.models import (
     DailyPnLRepository,
@@ -170,7 +171,7 @@ class TradingEngine:
 
     async def _fetch_ohlcv_data(self) -> pd.DataFrame:
         """Fetch and cache OHLCV data."""
-        now = datetime.now()
+        now = now_jst()
 
         # Use cache if recent
         if (
@@ -215,7 +216,7 @@ class TradingEngine:
 
     async def _check_and_respond_to_overfitting(self) -> None:
         """Check for overfitting and enable conservative mode if needed."""
-        now = datetime.now()
+        now = now_jst()
 
         # Skip if checked recently
         if (
@@ -570,7 +571,7 @@ class TradingEngine:
                     trade.id,
                     {
                         "pnl": pnl,
-                        "exit_time": datetime.now(),
+                        "exit_time": now_jst(),
                         "status": status,
                     },
                 )
@@ -584,7 +585,7 @@ class TradingEngine:
                     trade.id,
                     {
                         "pnl": pnl,
-                        "exit_time": datetime.now(),
+                        "exit_time": now_jst(),
                         "status": status,
                     },
                 )
@@ -699,7 +700,7 @@ class TradingEngine:
                         "exit_price": position.entry_price,  # Approximate
                         "pnl": pnl,
                         "pnl_percent": pnl / (position.entry_price * position.size),
-                        "exit_time": datetime.now(),
+                        "exit_time": now_jst(),
                         "status": status,
                     },
                 )

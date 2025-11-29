@@ -2,12 +2,12 @@
 
 import asyncio
 import sys
-from datetime import datetime
 
 from loguru import logger
 
 from config.settings import get_settings
 from src.core.engine import TradingEngine
+from src.utils.timezone import now_jst
 
 
 def setup_logging() -> None:
@@ -35,8 +35,8 @@ async def main() -> None:
     engine = TradingEngine(settings)
 
     try:
-        # Get current hour for report scheduling
-        now = datetime.now()
+        # Get current hour for report scheduling (JST)
+        now = now_jst()
         hour = now.hour
 
         # Morning report (8:00)
