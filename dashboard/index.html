@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GMO Trading Bot Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-card: #1f2940;
+            --text-primary: #eaeaea;
+            --text-secondary: #a0a0a0;
+            --accent-green: #00d09c;
+            --accent-red: #ff6b6b;
+            --accent-blue: #4dabf7;
+            --accent-yellow: #ffd43b;
+            --border-color: #2a3a5c;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 24px;
+            color: var(--text-primary);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent-red);
+        }
+
+        .status-dot.connected {
+            background: var(--accent-green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        .card-title {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .card-value {
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .card-value.positive { color: var(--accent-green); }
+        .card-value.negative { color: var(--accent-red); }
+
+        .card-subtitle {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: var(--text-primary);
+        }
+
+        .chart-container {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .allocation-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .allocation-item {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .allocation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .allocation-symbol {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .allocation-pct {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .allocation-bar {
+            height: 8px;
+            background: var(--border-color);
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .allocation-bar-long {
+            background: var(--accent-green);
+            height: 100%;
+        }
+
+        .allocation-bar-short {
+            background: var(--accent-red);
+            height: 100%;
+        }
+
+        .allocation-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .settings-form {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+
+        .btn-danger {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            opacity: 0.9;
+        }
+
+        .btn-warning {
+            background: var(--accent-yellow);
+            color: #1a1a2e;
+        }
+
+        .btn-warning:hover {
+            opacity: 0.9;
+        }
+
+        .emergency-panel {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 2px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .emergency-panel.active {
+            border-color: var(--accent-red);
+            background: rgba(255, 107, 107, 0.1);
+        }
+
+        .emergency-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .emergency-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .emergency-indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent-green);
+        }
+
+        .emergency-indicator.stopped {
+            background: var(--accent-red);
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .emergency-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .emergency-info {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .emergency-info.warning {
+            color: var(--accent-yellow);
+        }
+
+        .trades-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .trades-table th, .trades-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .trades-table th {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-long {
+            background: rgba(0, 208, 156, 0.2);
+            color: var(--accent-green);
+        }
+
+        .badge-short {
+            background: rgba(255, 107, 107, 0.2);
+            color: var(--accent-red);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            background: var(--accent-blue);
+            color: white;
+            border-color: var(--accent-blue);
+        }
+
+        .tab:hover:not(.active) {
+            border-color: var(--accent-blue);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .connection-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .connection-form input {
+            padding: 8px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            width: 200px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            background: var(--bg-card);
+            border-radius: 8px;
+            border-left: 4px solid var(--accent-green);
+            transform: translateX(400px);
+            transition: transform 0.3s;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast.error {
+            border-left-color: var(--accent-red);
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+
+            .connection-form {
+                flex-direction: column;
+            }
+
+            .connection-form input {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>GMO Trading Bot</h1>
+            <div class="connection-form">
+                <input type="text" id="apiUrl" placeholder="API URL (例: http://vps-ip:8088)" value="http://localhost:8088">
+                <button class="btn btn-primary" onclick="connect()">接続</button>
+                <div class="status-indicator">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="connectionStatus">未接続</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('dashboard')">ダッシュボード</div>
+            <div class="tab" onclick="showTab('trades')">取引履歴</div>
+            <div class="tab" onclick="showTab('settings')">設定</div>
+        </div>
+
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-content active">
+            <!-- Emergency Stop Panel -->
+            <div class="emergency-panel" id="emergencyPanel">
+                <div class="emergency-header">
+                    <div class="emergency-status">
+                        <span class="emergency-indicator" id="emergencyIndicator"></span>
+                        <strong id="emergencyStatusText">通常稼働中</strong>
+                    </div>
+                    <div class="emergency-buttons">
+                        <button class="btn btn-warning" onclick="emergencyStop('no_new_positions')">全停止</button>
+                        <button class="btn btn-danger" onclick="emergencyStop('full_stop')">緊急停止</button>
+                        <button class="btn btn-primary" onclick="resumeTrading()" id="resumeBtn" style="display: none;">全再開</button>
+                    </div>
+                </div>
+                <!-- Direction-specific controls -->
+                <div style="display: flex; gap: 20px; margin-top: 15px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <span class="emergency-indicator" id="longIndicator"></span>
+                            <strong>LONG:</strong>
+                            <span id="longStatusText">稼働中</span>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-warning" style="padding: 6px 12px; font-size: 12px;" onclick="stopDirection('long')" id="stopLongBtn">停止</button>
+                            <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; display: none;" onclick="resumeDirection('long')" id="resumeLongBtn">再開</button>
+                        </div>
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <span class="emergency-indicator" id="shortIndicator"></span>
+                            <strong>SHORT:</strong>
+                            <span id="shortStatusText">稼働中</span>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-warning" style="padding: 6px 12px; font-size: 12px;" onclick="stopDirection('short')" id="stopShortBtn">停止</button>
+                            <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; display: none;" onclick="resumeDirection('short')" id="resumeShortBtn">再開</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="emergency-info" id="emergencyInfo" style="margin-top: 10px;">
+                    取引は正常に行われています
+                </div>
+            </div>
+
+            <!-- Trading Mode Panel -->
+            <div class="card" style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                    <div style="display: flex; align-items: center; gap: 15px;">
+                        <span class="card-title" style="margin: 0;">トレードモード</span>
+                        <div id="currentModeDisplay" style="display: flex; align-items: center; gap: 8px;">
+                            <span class="badge" id="modeBadge" style="font-size: 14px; padding: 6px 12px;">--</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn" id="paperModeBtn" onclick="switchMode('paper')" style="background: var(--accent-blue);">
+                            📊 ペーパー
+                        </button>
+                        <button class="btn" id="liveModeBtn" onclick="switchMode('live')" style="background: var(--accent-green);">
+                            💰 ライブ
+                        </button>
+                    </div>
+                </div>
+                <div id="modeInfo" style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+                    <!-- Mode info will be populated here -->
+                </div>
+                <!-- Paper trading stats (shown only in paper mode) -->
+                <div id="paperStats" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border-color);">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px;">
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">仮想資金</div>
+                            <div id="paperCapital" style="font-size: 16px; font-weight: 600;">¥0</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">総損益</div>
+                            <div id="paperPnl" style="font-size: 16px; font-weight: 600;">¥0</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">取引数</div>
+                            <div id="paperTrades" style="font-size: 16px; font-weight: 600;">0</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">勝率</div>
+                            <div id="paperWinRate" style="font-size: 16px; font-weight: 600;">--%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid">
+                <div class="card">
+                    <div class="card-title">総資産</div>
+                    <div class="card-value" id="totalCapital">¥0</div>
+                    <div class="card-subtitle" id="modeLabel">モード: --</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">本日の損益</div>
+                    <div class="card-value" id="dailyPnl">¥0</div>
+                    <div class="card-subtitle" id="dailyTrades">取引数: 0</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">週間損益</div>
+                    <div class="card-value" id="weeklyPnl">¥0</div>
+                    <div class="card-subtitle" id="winRate">勝率: --%</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">月間損益</div>
+                    <div class="card-value" id="monthlyPnl">¥0</div>
+                    <div class="card-subtitle" id="profitFactor">プロフィットファクター: --</div>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h3 class="section-title">損益推移</h3>
+                <canvas id="pnlChart"></canvas>
+            </div>
+
+            <h3 class="section-title">資金配分</h3>
+            <div class="allocation-grid" id="allocationGrid">
+                <!-- Dynamically populated -->
+            </div>
+
+            <h3 class="section-title" style="margin-top: 30px;">オープンポジション</h3>
+            <div class="card">
+                <table class="trades-table">
+                    <thead>
+                        <tr>
+                            <th>シンボル</th>
+                            <th>方向</th>
+                            <th>エントリー価格</th>
+                            <th>サイズ</th>
+                            <th>ストップロス</th>
+                            <th>エントリー時刻</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positionsBody">
+                        <tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">ポジションなし</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Trades Tab -->
+        <div id="trades" class="tab-content">
+            <div class="card">
+                <table class="trades-table">
+                    <thead>
+                        <tr>
+                            <th>日時</th>
+                            <th>シンボル</th>
+                            <th>方向</th>
+                            <th>エントリー</th>
+                            <th>エグジット</th>
+                            <th>サイズ</th>
+                            <th>損益</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesBody">
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-secondary);">取引履歴なし</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="settings" class="tab-content">
+            <div class="grid">
+                <div class="settings-form">
+                    <h3 class="section-title">ポートフォリオ設定</h3>
+                    <div class="form-group">
+                        <label>シンボル配分 (例: BTC_JPY:0.50,ETH_JPY:0.30)</label>
+                        <input type="text" id="setting_symbols_config" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>資金使用率 (0.0-1.0)</label>
+                        <input type="number" step="0.05" min="0" max="1" id="setting_total_capital_utilization" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>LONG配分比率 (0.0-1.0)</label>
+                        <input type="number" step="0.05" min="0" max="1" id="setting_long_allocation_ratio" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>SHORT配分比率 (0.0-1.0)</label>
+                        <input type="number" step="0.05" min="0" max="1" id="setting_short_allocation_ratio" value="">
+                    </div>
+                    <button class="btn btn-primary" onclick="saveSettings('portfolio')">保存</button>
+                </div>
+
+                <div class="settings-form">
+                    <h3 class="section-title">LONGリスク設定</h3>
+                    <div class="form-group">
+                        <label>リスク/取引 (0.0-1.0)</label>
+                        <input type="number" step="0.005" min="0" max="1" id="setting_long_risk_per_trade" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>信頼度閾値 (0.0-1.0)</label>
+                        <input type="number" step="0.05" min="0" max="1" id="setting_long_confidence_threshold" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>最大日次取引数</label>
+                        <input type="number" step="1" min="0" max="20" id="setting_long_max_daily_trades" value="">
+                    </div>
+                    <button class="btn btn-primary" onclick="saveSettings('long')">保存</button>
+                </div>
+
+                <div class="settings-form">
+                    <h3 class="section-title">SHORTリスク設定</h3>
+                    <div class="form-group">
+                        <label>リスク/取引 (0.0-1.0)</label>
+                        <input type="number" step="0.005" min="0" max="1" id="setting_short_risk_per_trade" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>信頼度閾値 (0.0-1.0)</label>
+                        <input type="number" step="0.05" min="0" max="1" id="setting_short_confidence_threshold" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>最大日次取引数</label>
+                        <input type="number" step="1" min="0" max="20" id="setting_short_max_daily_trades" value="">
+                    </div>
+                    <button class="btn btn-primary" onclick="saveSettings('short')">保存</button>
+                </div>
+
+                <div class="settings-form">
+                    <h3 class="section-title">グローバル設定</h3>
+                    <div class="form-group">
+                        <label>日次損失上限 (0.0-1.0)</label>
+                        <input type="number" step="0.01" min="0" max="1" id="setting_daily_loss_limit" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>最大日次取引数</label>
+                        <input type="number" step="1" min="0" max="20" id="setting_max_daily_trades" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>モード</label>
+                        <select id="setting_mode">
+                            <option value="paper">Paper (デモ)</option>
+                            <option value="live">Live (本番)</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="saveSettings('global')">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        let apiUrl = 'http://localhost:8088';
+        let wsUrl = 'ws://localhost:8088/ws';
+        let isConnected = false;
+        let pnlChart = null;
+        let refreshInterval = null;
+        let emergencyState = null;
+        let ws = null;
+        let wsReconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show' + (isError ? ' error' : '');
+            setTimeout(() => {
+                toast.className = 'toast';
+            }, 3000);
+        }
+
+        function showTab(tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelector(`.tab[onclick="showTab('${tabId}')"]`).classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        async function connect() {
+            apiUrl = document.getElementById('apiUrl').value;
+
+            // Derive WebSocket URL from API URL
+            wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
+
+            try {
+                // First verify API is reachable
+                const response = await fetch(`${apiUrl}/`);
+                const data = await response.json();
+
+                if (data.status === 'running') {
+                    // Connect WebSocket for real-time updates
+                    connectWebSocket();
+
+                    // Initial data load
+                    await refreshData();
+
+                    // Fetch trading mode
+                    await fetchMode();
+
+                    // Fallback: poll every 30 seconds in case WebSocket disconnects
+                    if (refreshInterval) clearInterval(refreshInterval);
+                    refreshInterval = setInterval(refreshData, 30000);
+                }
+            } catch (e) {
+                isConnected = false;
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('connectionStatus').textContent = '接続失敗';
+                showToast('接続できません: ' + e.message, true);
+            }
+        }
+
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                isConnected = true;
+                wsReconnectAttempts = 0;
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('connectionStatus').textContent = 'リアルタイム接続中';
+                showToast('WebSocket接続成功');
+                console.log('WebSocket connected');
+
+                // Send ping every 30 seconds to keep connection alive
+                setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ping' }));
+                    }
+                }, 30000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleWebSocketMessage(message);
+                } catch (e) {
+                    console.error('Error parsing WebSocket message:', e);
+                }
+            };
+
+            ws.onclose = (event) => {
+                console.log('WebSocket closed:', event.code, event.reason);
+                document.getElementById('connectionStatus').textContent = 'WebSocket切断';
+
+                // Attempt to reconnect
+                if (wsReconnectAttempts < maxReconnectAttempts) {
+                    wsReconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+                    console.log(`Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts})`);
+                    setTimeout(connectWebSocket, delay);
+                } else {
+                    document.getElementById('statusDot').classList.remove('connected');
+                    document.getElementById('connectionStatus').textContent = '接続失敗';
+                    showToast('WebSocket再接続失敗', true);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleWebSocketMessage(message) {
+            switch (message.type) {
+                case 'initial_status':
+                case 'status_update':
+                    updateStatusFromWS(message.data);
+                    break;
+
+                case 'trade_opened':
+                    showToast(`新規取引: ${message.data.symbol} ${message.data.side}`);
+                    refreshData(); // Refresh all data for new trade
+                    break;
+
+                case 'trade_closed':
+                    const pnl = message.data.pnl >= 0 ? `+¥${message.data.pnl.toLocaleString()}` : `¥${message.data.pnl.toLocaleString()}`;
+                    showToast(`決済完了: ${message.data.symbol} ${pnl}`, message.data.pnl < 0);
+                    refreshData();
+                    break;
+
+                case 'alert':
+                    showToast(`${message.alert_type}: ${message.message}`, message.severity === 'error');
+                    break;
+
+                case 'pong':
+                    // Heartbeat response, ignore
+                    break;
+
+                default:
+                    console.log('Unknown message type:', message.type);
+            }
+        }
+
+        function updateStatusFromWS(data) {
+            // Update main status
+            if (data.capital !== undefined) {
+                document.getElementById('totalCapital').textContent = formatCurrency(data.capital);
+            }
+            if (data.mode !== undefined) {
+                document.getElementById('modeLabel').textContent = `モード: ${data.mode}${data.conservative_mode ? ' (保守)' : ''}`;
+            }
+            if (data.daily_pnl !== undefined) {
+                const dailyPnlEl = document.getElementById('dailyPnl');
+                dailyPnlEl.textContent = formatCurrency(data.daily_pnl);
+                dailyPnlEl.className = 'card-value ' + (data.daily_pnl >= 0 ? 'positive' : 'negative');
+            }
+            if (data.daily_trades !== undefined) {
+                document.getElementById('dailyTrades').textContent = `取引数: ${data.daily_trades}`;
+            }
+            if (data.emergency_stop) {
+                updateEmergencyPanel(data.emergency_stop);
+            }
+
+            // Update drawdown info if available
+            if (data.drawdown) {
+                updateDrawdownInfo(data.drawdown);
+            }
+        }
+
+        function updateDrawdownInfo(drawdown) {
+            // Could add a drawdown panel in the future
+            console.log('Drawdown:', drawdown);
+        }
+
+        async function refreshData() {
+            if (!isConnected) return;
+
+            try {
+                // Fetch all data in parallel
+                const [status, pnl, allocation, positions, trades] = await Promise.all([
+                    fetch(`${apiUrl}/api/status`).then(r => r.json()),
+                    fetch(`${apiUrl}/api/pnl`).then(r => r.json()),
+                    fetch(`${apiUrl}/api/allocation`).then(r => r.json()),
+                    fetch(`${apiUrl}/api/positions`).then(r => r.json()),
+                    fetch(`${apiUrl}/api/trades?limit=50`).then(r => r.json()),
+                ]);
+
+                updateStatus(status);
+                updatePnL(pnl);
+                updateAllocation(allocation);
+                updatePositions(positions.positions);
+                updateTrades(trades.trades);
+
+                // Fetch and update chart
+                const history = await fetch(`${apiUrl}/api/pnl/history?days=30`).then(r => r.json());
+                updateChart(history.history);
+
+                // Fetch and update settings
+                const settings = await fetch(`${apiUrl}/api/settings`).then(r => r.json());
+                updateSettings(settings.settings);
+
+            } catch (e) {
+                console.error('Data refresh error:', e);
+            }
+        }
+
+        function formatCurrency(value) {
+            return '¥' + Math.round(value).toLocaleString();
+        }
+
+        function updateStatus(data) {
+            document.getElementById('totalCapital').textContent = formatCurrency(data.capital);
+            document.getElementById('modeLabel').textContent = `モード: ${data.mode}${data.conservative_mode ? ' (保守)' : ''}`;
+
+            const dailyPnlEl = document.getElementById('dailyPnl');
+            dailyPnlEl.textContent = formatCurrency(data.daily_pnl);
+            dailyPnlEl.className = 'card-value ' + (data.daily_pnl >= 0 ? 'positive' : 'negative');
+
+            document.getElementById('dailyTrades').textContent = `取引数: ${data.daily_trades}`;
+
+            // Update emergency stop status
+            if (data.emergency_stop) {
+                updateEmergencyPanel(data.emergency_stop);
+            }
+        }
+
+        function updateEmergencyPanel(emergency) {
+            emergencyState = emergency;
+            const panel = document.getElementById('emergencyPanel');
+            const indicator = document.getElementById('emergencyIndicator');
+            const statusText = document.getElementById('emergencyStatusText');
+            const info = document.getElementById('emergencyInfo');
+            const resumeBtn = document.getElementById('resumeBtn');
+
+            // Global status
+            if (emergency.mode !== 'none') {
+                panel.classList.add('active');
+                indicator.classList.add('stopped');
+                resumeBtn.style.display = 'inline-block';
+
+                if (emergency.mode === 'full_stop') {
+                    statusText.textContent = '緊急停止中';
+                    info.textContent = `理由: ${emergency.reason || '手動'} - ${emergency.message || '全取引停止'}`;
+                } else if (emergency.mode === 'no_new_positions') {
+                    statusText.textContent = '新規取引停止中';
+                    info.textContent = `理由: ${emergency.reason || '手動'} - ${emergency.message || '新規ポジション作成を停止'}`;
+                }
+                info.classList.add('warning');
+
+                if (emergency.auto_resume_at) {
+                    const resumeTime = new Date(emergency.auto_resume_at).toLocaleString('ja-JP');
+                    info.textContent += ` (自動再開: ${resumeTime})`;
+                }
+            } else if (emergency.long_stopped || emergency.short_stopped) {
+                // Only direction-specific stops
+                panel.classList.add('active');
+                indicator.classList.remove('stopped');
+                resumeBtn.style.display = 'none';
+
+                let stoppedDirs = [];
+                if (emergency.long_stopped) stoppedDirs.push('LONG');
+                if (emergency.short_stopped) stoppedDirs.push('SHORT');
+                statusText.textContent = `${stoppedDirs.join('/')}停止中`;
+                info.textContent = '一部の取引方向が停止されています';
+                info.classList.add('warning');
+            } else {
+                panel.classList.remove('active');
+                indicator.classList.remove('stopped');
+                statusText.textContent = '通常稼働中';
+                info.textContent = '取引は正常に行われています';
+                info.classList.remove('warning');
+                resumeBtn.style.display = 'none';
+            }
+
+            // Update LONG status
+            const longIndicator = document.getElementById('longIndicator');
+            const longStatusText = document.getElementById('longStatusText');
+            const stopLongBtn = document.getElementById('stopLongBtn');
+            const resumeLongBtn = document.getElementById('resumeLongBtn');
+
+            if (emergency.long_stopped || !emergency.can_open_long) {
+                longIndicator.classList.add('stopped');
+                longStatusText.textContent = emergency.long_stop_reason || '停止中';
+                longStatusText.style.color = 'var(--accent-red)';
+                stopLongBtn.style.display = 'none';
+                resumeLongBtn.style.display = emergency.mode === 'none' ? 'inline-block' : 'none';
+            } else {
+                longIndicator.classList.remove('stopped');
+                longStatusText.textContent = '稼働中';
+                longStatusText.style.color = 'var(--accent-green)';
+                stopLongBtn.style.display = 'inline-block';
+                resumeLongBtn.style.display = 'none';
+            }
+
+            // Update SHORT status
+            const shortIndicator = document.getElementById('shortIndicator');
+            const shortStatusText = document.getElementById('shortStatusText');
+            const stopShortBtn = document.getElementById('stopShortBtn');
+            const resumeShortBtn = document.getElementById('resumeShortBtn');
+
+            if (emergency.short_stopped || !emergency.can_open_short) {
+                shortIndicator.classList.add('stopped');
+                shortStatusText.textContent = emergency.short_stop_reason || '停止中';
+                shortStatusText.style.color = 'var(--accent-red)';
+                stopShortBtn.style.display = 'none';
+                resumeShortBtn.style.display = emergency.mode === 'none' ? 'inline-block' : 'none';
+            } else {
+                shortIndicator.classList.remove('stopped');
+                shortStatusText.textContent = '稼働中';
+                shortStatusText.style.color = 'var(--accent-green)';
+                stopShortBtn.style.display = 'inline-block';
+                resumeShortBtn.style.display = 'none';
+            }
+        }
+
+        async function emergencyStop(mode) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            const modeText = mode === 'full_stop' ? '緊急停止（全ポジション決済）' : '新規取引停止';
+            if (!confirm(`${modeText}を実行しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mode: mode,
+                        reason: 'manual',
+                        message: 'ダッシュボードから手動で停止',
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${modeText}を実行しました`);
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        async function resumeTrading() {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            if (!confirm('取引を再開しますか？')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/resume`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast('取引を再開しました');
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        async function stopDirection(direction) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            const dirText = direction.toUpperCase();
+            if (!confirm(`${dirText}取引を停止しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/stop/${direction}?reason=ダッシュボードから手動停止`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${dirText}取引を停止しました`);
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        async function resumeDirection(direction) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            const dirText = direction.toUpperCase();
+            if (!confirm(`${dirText}取引を再開しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/emergency/resume/${direction}`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${dirText}取引を再開しました`);
+                    updateEmergencyPanel(data.status);
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        // ============================================
+        // Trading Mode Functions
+        // ============================================
+
+        let currentMode = 'paper';
+
+        async function fetchMode() {
+            if (!isConnected) return;
+
+            try {
+                const response = await fetch(`${apiUrl}/api/mode`);
+                const data = await response.json();
+                updateModeDisplay(data.mode, data.paper_stats);
+            } catch (e) {
+                console.error('Failed to fetch mode:', e);
+            }
+        }
+
+        function updateModeDisplay(mode, paperStats) {
+            currentMode = mode;
+            const badge = document.getElementById('modeBadge');
+            const modeInfo = document.getElementById('modeInfo');
+            const paperModeBtn = document.getElementById('paperModeBtn');
+            const liveModeBtn = document.getElementById('liveModeBtn');
+            const paperStatsDiv = document.getElementById('paperStats');
+
+            // Update badge
+            if (mode === 'paper') {
+                badge.textContent = '📊 ペーパー';
+                badge.style.background = 'rgba(77, 171, 247, 0.2)';
+                badge.style.color = 'var(--accent-blue)';
+                modeInfo.innerHTML = '仮想取引モード - 実際の資金は使用されません';
+                paperModeBtn.style.opacity = '0.5';
+                liveModeBtn.style.opacity = '1';
+            } else {
+                badge.textContent = '💰 ライブ';
+                badge.style.background = 'rgba(0, 208, 156, 0.2)';
+                badge.style.color = 'var(--accent-green)';
+                modeInfo.innerHTML = '<span style="color: var(--accent-yellow);">⚠️ 本番モード - 実際の資金を使用しています</span>';
+                paperModeBtn.style.opacity = '1';
+                liveModeBtn.style.opacity = '0.5';
+            }
+
+            // Update paper stats display
+            if (mode === 'paper' && paperStats) {
+                paperStatsDiv.style.display = 'block';
+                document.getElementById('paperCapital').textContent = formatCurrency(paperStats.current_capital);
+
+                const pnlEl = document.getElementById('paperPnl');
+                pnlEl.textContent = formatCurrency(paperStats.total_pnl);
+                pnlEl.style.color = paperStats.total_pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+
+                document.getElementById('paperTrades').textContent = paperStats.total_trades;
+                document.getElementById('paperWinRate').textContent = `${(paperStats.win_rate * 100).toFixed(1)}%`;
+            } else {
+                paperStatsDiv.style.display = 'none';
+            }
+        }
+
+        async function switchMode(newMode) {
+            if (!isConnected) {
+                showToast('APIに接続されていません', true);
+                return;
+            }
+
+            if (newMode === currentMode) {
+                showToast(`既に${newMode.toUpperCase()}モードです`);
+                return;
+            }
+
+            // Confirm for live mode
+            if (newMode === 'live') {
+                const confirmed = confirm(
+                    '⚠️ ライブモードに切り替えますか？\n\n' +
+                    '実際の資金を使用して取引を行います。\n' +
+                    'ペーパートレードの結果を確認してから切り替えることをお勧めします。'
+                );
+                if (!confirmed) return;
+
+                // Double confirm
+                const doubleConfirm = confirm(
+                    '本当にライブモードに切り替えますか？\n\n' +
+                    'この操作は実際の資金に影響します。'
+                );
+                if (!doubleConfirm) return;
+            }
+
+            try {
+                const confirm_param = newMode === 'live' ? '&confirm=true' : '';
+                const response = await fetch(`${apiUrl}/api/mode?mode=${newMode}${confirm_param}`, {
+                    method: 'POST',
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`${newMode.toUpperCase()}モードに切り替えました`);
+                    fetchMode();
+
+                    if (data.restart_required) {
+                        showToast('完全な切り替えにはボットの再起動が必要です', false);
+                    }
+                } else {
+                    showToast(`エラー: ${data.message}`, true);
+                }
+            } catch (e) {
+                showToast(`エラー: ${e.message}`, true);
+            }
+        }
+
+        function updatePnL(data) {
+            const weeklyEl = document.getElementById('weeklyPnl');
+            weeklyEl.textContent = formatCurrency(data.weekly);
+            weeklyEl.className = 'card-value ' + (data.weekly >= 0 ? 'positive' : 'negative');
+
+            const monthlyEl = document.getElementById('monthlyPnl');
+            monthlyEl.textContent = formatCurrency(data.monthly);
+            monthlyEl.className = 'card-value ' + (data.monthly >= 0 ? 'positive' : 'negative');
+
+            document.getElementById('winRate').textContent = `勝率: ${(data.win_rate * 100).toFixed(1)}%`;
+            document.getElementById('profitFactor').textContent = `PF: ${data.profit_factor.toFixed(2)}`;
+        }
+
+        function updateAllocation(data) {
+            const grid = document.getElementById('allocationGrid');
+            grid.innerHTML = '';
+
+            for (const [symbol, info] of Object.entries(data.symbols)) {
+                const item = document.createElement('div');
+                item.className = 'allocation-item';
+                item.innerHTML = `
+                    <div class="allocation-header">
+                        <span class="allocation-symbol">${symbol}</span>
+                        <span class="allocation-pct">${(info.allocation_pct * 100).toFixed(0)}%</span>
+                    </div>
+                    <div class="allocation-bar">
+                        <div class="allocation-bar-long" style="width: ${data.long_ratio * 100}%"></div>
+                        <div class="allocation-bar-short" style="width: ${data.short_ratio * 100}%"></div>
+                    </div>
+                    <div class="allocation-labels">
+                        <span>LONG: ${formatCurrency(info.long_allocated)}</span>
+                        <span>SHORT: ${formatCurrency(info.short_allocated)}</span>
+                    </div>
+                `;
+                grid.appendChild(item);
+            }
+        }
+
+        function updatePositions(positions) {
+            const tbody = document.getElementById('positionsBody');
+
+            if (!positions || positions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">ポジションなし</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = positions.map(p => `
+                <tr>
+                    <td>${p.symbol}</td>
+                    <td><span class="badge ${p.side === 'BUY' ? 'badge-long' : 'badge-short'}">${p.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
+                    <td>${formatCurrency(p.entry_price)}</td>
+                    <td>${p.size.toFixed(6)}</td>
+                    <td>${formatCurrency(p.stop_loss)}</td>
+                    <td>${new Date(p.entry_time).toLocaleString('ja-JP')}</td>
+                </tr>
+            `).join('');
+        }
+
+        function updateTrades(trades) {
+            const tbody = document.getElementById('tradesBody');
+
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-secondary);">取引履歴なし</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = trades.filter(t => t.exit_time).map(t => `
+                <tr>
+                    <td>${new Date(t.exit_time).toLocaleString('ja-JP')}</td>
+                    <td>${t.symbol}</td>
+                    <td><span class="badge ${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
+                    <td>${formatCurrency(t.entry_price)}</td>
+                    <td>${t.exit_price ? formatCurrency(t.exit_price) : '-'}</td>
+                    <td>${t.size.toFixed(6)}</td>
+                    <td style="color: ${t.pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}">${t.pnl ? formatCurrency(t.pnl) : '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        function updateChart(history) {
+            const ctx = document.getElementById('pnlChart').getContext('2d');
+
+            if (!history || history.length === 0) {
+                return;
+            }
+
+            // Calculate cumulative PnL
+            let cumulative = 0;
+            const cumulativeData = history.map(h => {
+                cumulative += h.pnl;
+                return cumulative;
+            });
+
+            if (pnlChart) {
+                pnlChart.destroy();
+            }
+
+            pnlChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: history.map(h => h.date),
+                    datasets: [{
+                        label: '累積損益',
+                        data: cumulativeData,
+                        borderColor: '#4dabf7',
+                        backgroundColor: 'rgba(77, 171, 247, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false,
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)',
+                            },
+                            ticks: {
+                                color: '#a0a0a0',
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)',
+                            },
+                            ticks: {
+                                color: '#a0a0a0',
+                                callback: function(value) {
+                                    return '¥' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateSettings(settings) {
+            for (const [key, value] of Object.entries(settings)) {
+                const el = document.getElementById(`setting_${key}`);
+                if (el) {
+                    el.value = value;
+                }
+            }
+        }
+
+        async function saveSettings(group) {
+            const settingsToSave = {
+                portfolio: ['symbols_config', 'total_capital_utilization', 'long_allocation_ratio', 'short_allocation_ratio'],
+                long: ['long_risk_per_trade', 'long_confidence_threshold', 'long_max_daily_trades'],
+                short: ['short_risk_per_trade', 'short_confidence_threshold', 'short_max_daily_trades'],
+                global: ['daily_loss_limit', 'max_daily_trades', 'mode'],
+            };
+
+            const keys = settingsToSave[group];
+            let success = true;
+
+            for (const key of keys) {
+                const el = document.getElementById(`setting_${key}`);
+                if (!el) continue;
+
+                const value = el.value;
+
+                try {
+                    const response = await fetch(`${apiUrl}/api/settings`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ key, value }),
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        showToast(`${key}: ${error.detail}`, true);
+                        success = false;
+                    }
+                } catch (e) {
+                    showToast(`保存エラー: ${e.message}`, true);
+                    success = false;
+                }
+            }
+
+            if (success) {
+                showToast('設定を保存しました');
+                refreshData();
+            }
+        }
+
+        // Set chart height
+        document.getElementById('pnlChart').parentElement.style.height = '300px';
+    </script>
+</body>
+</html>
