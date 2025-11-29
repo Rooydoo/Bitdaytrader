@@ -8,6 +8,8 @@ from typing import Any
 
 from loguru import logger
 
+from src.utils.timezone import now_jst
+
 
 class PaperOrderStatus(str, Enum):
     """Paper order status."""
@@ -36,7 +38,7 @@ class PaperOrder:
     status: PaperOrderStatus = PaperOrderStatus.PENDING
     filled_size: float = 0.0
     filled_price: float = 0.0
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=now_jst)
     filled_at: datetime | None = None
 
     @property
@@ -58,7 +60,7 @@ class PaperPosition:
     size: float
     stop_loss: float
     take_profit_levels: list[tuple[float, float]] = field(default_factory=list)
-    entry_time: datetime = field(default_factory=datetime.now)
+    entry_time: datetime = field(default_factory=now_jst)
     exit_time: datetime | None = None
     exit_price: float | None = None
     realized_pnl: float = 0.0
@@ -138,8 +140,8 @@ class PaperTradingExecutor:
         self.total_commission = 0.0
 
         # Session tracking
-        self.session_start = datetime.now()
-        self.last_update = datetime.now()
+        self.session_start = now_jst()
+        self.last_update = now_jst()
 
         # Order ID counter
         self._order_counter = 0
@@ -258,7 +260,7 @@ class PaperTradingExecutor:
             "price": fill_price,
             "stop_loss": stop_loss,
             "commission": commission,
-            "timestamp": datetime.now(),
+            "timestamp": now_jst(),
             "confidence": confidence,
         })
 
@@ -340,13 +342,13 @@ class PaperTradingExecutor:
             "pnl": net_pnl,
             "reason": reason,
             "commission": commission,
-            "timestamp": datetime.now(),
+            "timestamp": now_jst(),
         })
 
         # Check if fully closed
         if position.remaining_size <= 0:
             position.status = "CLOSED"
-            position.exit_time = datetime.now()
+            position.exit_time = now_jst()
             position.exit_price = actual_exit_price
 
             # Track statistics
@@ -501,7 +503,7 @@ class PaperTradingExecutor:
         total_return = (self.current_capital - self.initial_capital) / self.initial_capital
 
         # Session duration
-        duration = datetime.now() - self.session_start
+        duration = now_jst() - self.session_start
 
         return {
             "session_start": self.session_start.isoformat(),
@@ -559,7 +561,7 @@ class PaperTradingExecutor:
         self.losing_trades = 0
         self.total_pnl = 0.0
         self.total_commission = 0.0
-        self.session_start = datetime.now()
+        self.session_start = now_jst()
         self._order_counter = 0
 
         logger.info("Paper trading state reset")
