@@ -1,0 +1,26 @@
+[Unit]
+Description=Bitdaytrader - GMO Coin Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Bitdaytrader
+Environment="PATH=/root/Bitdaytrader/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="MODE=paper"
+ExecStart=/root/Bitdaytrader/.venv/bin/python /root/Bitdaytrader/scripts/run_daemon.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bitdaytrader
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/Bitdaytrader/data /root/Bitdaytrader/logs /root/Bitdaytrader/models
+
+[Install]
+WantedBy=multi-user.target
