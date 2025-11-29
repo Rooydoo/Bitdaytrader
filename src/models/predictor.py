@@ -31,9 +31,17 @@ class Predictor:
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        self.model = joblib.load(model_path)
+        loaded = joblib.load(model_path)
+
+        # Handle both dict format (from trainer) and raw model format
+        if isinstance(loaded, dict) and "model" in loaded:
+            self.model = loaded["model"]
+            logger.info(f"Model loaded from {model_path} (dict format)")
+        else:
+            self.model = loaded
+            logger.info(f"Model loaded from {model_path}")
+
         self.model_path = model_path
-        logger.info(f"Model loaded from {model_path}")
 
     def save(self, model_path: str | Path) -> None:
         """Save model to file."""
