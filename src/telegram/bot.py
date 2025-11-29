@@ -6,6 +6,7 @@ from typing import Any
 from loguru import logger
 from telegram import Bot
 from telegram.constants import ParseMode
+from telegram.request import HTTPXRequest
 
 
 class TelegramBot:
@@ -27,7 +28,13 @@ class TelegramBot:
     def bot(self) -> Bot:
         """Get bot instance (lazy initialization)."""
         if self._bot is None:
-            self._bot = Bot(token=self.token)
+            # Use HTTPXRequest for proper async HTTP handling
+            request = HTTPXRequest(
+                connection_pool_size=8,
+                connect_timeout=10.0,
+                read_timeout=30.0,
+            )
+            self._bot = Bot(token=self.token, request=request)
         return self._bot
 
     async def send_message(self, text: str, parse_mode: str = ParseMode.HTML) -> bool:
@@ -42,14 +49,16 @@ class TelegramBot:
             True if sent successfully
         """
         try:
+            logger.info(f"Attempting to send Telegram message to chat {self.chat_id}")
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=text,
                 parse_mode=parse_mode,
             )
+            logger.info(f"Telegram message sent successfully (length={len(text)})")
             return True
         except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
+            logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
             return False
 
     def send_message_sync(self, text: str, parse_mode: str = ParseMode.HTML) -> bool:
@@ -88,6 +97,8 @@ class TelegramBot:
         emoji = "📈" if side == "BUY" else "📉"
         paper_tag = "[PAPER] " if is_paper else ""
 
+        logger.info(f"Sending trade opened notification: {direction} {symbol}")
+
         text = f"""
 {emoji} <b>{paper_tag}新規ポジション</b>
 
@@ -98,7 +109,9 @@ class TelegramBot:
 損切: ¥{stop_loss:,.0f}
 信頼度: {confidence:.1%}
 """
-        return await self.send_message(text.strip())
+        result = await self.send_message(text.strip())
+        logger.info(f"Trade opened notification result: {result}")
+        return result
 
     async def notify_trade_closed(
         self,
