@@ -47,6 +47,7 @@ class TelegramBot:
                 text=text,
                 parse_mode=parse_mode,
             )
+            logger.info(f"Telegram message sent successfully (length={len(text)})")
             return True
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
@@ -88,6 +89,8 @@ class TelegramBot:
         emoji = "📈" if side == "BUY" else "📉"
         paper_tag = "[PAPER] " if is_paper else ""
 
+        logger.info(f"Sending trade opened notification: {direction} {symbol}")
+
         text = f"""
 {emoji} <b>{paper_tag}新規ポジション</b>
 
@@ -98,7 +101,9 @@ class TelegramBot:
 損切: ¥{stop_loss:,.0f}
 信頼度: {confidence:.1%}
 """
-        return await self.send_message(text.strip())
+        result = await self.send_message(text.strip())
+        logger.info(f"Trade opened notification result: {result}")
+        return result
 
     async def notify_trade_closed(
         self,
