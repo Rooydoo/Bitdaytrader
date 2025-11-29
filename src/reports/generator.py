@@ -15,6 +15,7 @@ from src.database.models import (
     WalkForwardResult,
 )
 from src.telegram.bot import TelegramBot
+from src.tax.calculator import TaxCalculator, TaxReport
 
 
 class ReportGenerator:
@@ -352,3 +353,233 @@ class ReportGenerator:
             "live_accuracy": latest.live_accuracy,
             "live_predictions": latest.live_predictions,
         }
+
+    def generate_backtest_report_with_tax(
+        self,
+        initial_capital: float,
+        final_capital: float,
+        trades: list[Trade],
+        start_date: str,
+        end_date: str,
+        other_income: float = 0.0,
+    ) -> dict[str, Any]:
+        """
+        バックテスト結果レポートを生成（税引後リターン含む）.
+
+        Args:
+            initial_capital: 初期資本
+            final_capital: 最終資本
+            trades: 取引リスト
+            start_date: 開始日
+            end_date: 終了日
+            other_income: 他の雑所得
+
+        Returns:
+            バックテスト結果レポート
+        """
+        if not trades:
+            return {"error": "No trades to analyze"}
+
+        # 基本統計
+        total_trades = len(trades)
+        wins = sum(1 for t in trades if t.pnl and t.pnl > 0)
+        losses = total_trades - wins
+        win_rate = wins / total_trades if total_trades > 0 else 0
+
+        # 損益
+        gross_profit = sum(t.pnl for t in trades if t.pnl and t.pnl > 0)
+        gross_loss = abs(sum(t.pnl for t in trades if t.pnl and t.pnl < 0))
+        net_pnl = gross_profit - gross_loss
+
+        # Profit Factor
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+        # 平均利益/損失
+        avg_win = gross_profit / wins if wins > 0 else 0
+        avg_loss = gross_loss / losses if losses > 0 else 0
+        avg_win_loss_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
+
+        # リターン
+        gross_return_pct = (final_capital - initial_capital) / initial_capital * 100
+
+        # 税金計算
+        tax_calc = TaxCalculator(other_income=other_income)
+        year = int(start_date[:4])
+
+        # 取引を税計算に追加
+        from src.tax.calculator import TradeRecord
+        for trade in trades:
+            if trade.pnl is not None and trade.entry_time:
+                tax_calc.add_trade(TradeRecord(
+                    trade_id=str(trade.id),
+                    timestamp=trade.entry_time,
+                    symbol=trade.symbol,
+                    side=trade.side,
+                    price=trade.entry_price or 0,
+                    size=trade.size,
+                    pnl=trade.pnl,
+                ))
+
+        tax_report = tax_calc.generate_report(year)
+
+        # 税引後リターン
+        after_tax_return_pct = (tax_report.after_tax_profit / initial_capital) * 100
+
+        # ドローダウン計算
+        capitals = [initial_capital]
+        for trade in sorted(trades, key=lambda t: t.entry_time or datetime.min):
+            if trade.pnl:
+                capitals.append(capitals[-1] + trade.pnl)
+
+        max_drawdown = 0.0
+        peak = capitals[0]
+        for cap in capitals:
+            if cap > peak:
+                peak = cap
+            dd = (peak - cap) / peak
+            max_drawdown = max(max_drawdown, dd)
+
+        # 損益分岐点分析
+        breakeven = tax_calc.get_breakeven_win_rate(
+            avg_win_loss_ratio=avg_win_loss_ratio if avg_win_loss_ratio != float('inf') else 1.5,
+            risk_per_trade=0.02,
+            monthly_trades=total_trades,
+        )
+
+        return {
+            "period": {
+                "start": start_date,
+                "end": end_date,
+            },
+            "capital": {
+                "initial": initial_capital,
+                "final": final_capital,
+            },
+            "trades": {
+                "total": total_trades,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate * 100,
+            },
+            "pnl": {
+                "gross_profit": gross_profit,
+                "gross_loss": gross_loss,
+                "net_pnl": net_pnl,
+                "profit_factor": profit_factor,
+                "avg_win": avg_win,
+                "avg_loss": avg_loss,
+                "avg_win_loss_ratio": avg_win_loss_ratio,
+            },
+            "returns": {
+                "gross_return_pct": gross_return_pct,
+                "after_tax_return_pct": after_tax_return_pct,
+                "max_drawdown_pct": max_drawdown * 100,
+            },
+            "tax": {
+                "taxable_income": tax_report.taxable_income,
+                "income_tax": tax_report.income_tax,
+                "resident_tax": tax_report.resident_tax,
+                "total_tax": tax_report.total_tax,
+                "effective_rate_pct": tax_report.effective_rate * 100,
+                "after_tax_profit": tax_report.after_tax_profit,
+            },
+            "breakeven_analysis": breakeven,
+        }
+
+    def format_backtest_report(self, report: dict[str, Any]) -> str:
+        """バックテストレポートをフォーマット."""
+        if "error" in report:
+            return f"Error: {report['error']}"
+
+        period = report["period"]
+        capital = report["capital"]
+        trades = report["trades"]
+        pnl = report["pnl"]
+        returns = report["returns"]
+        tax = report["tax"]
+
+        return f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 バックテスト結果レポート
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📅 期間: {period['start']} ~ {period['end']}
+
+💰 資本
+├ 初期: ¥{capital['initial']:,.0f}
+└ 最終: ¥{capital['final']:,.0f}
+
+📈 取引実績
+├ 総取引数: {trades['total']}回
+├ 勝ち: {trades['wins']}回
+├ 負け: {trades['losses']}回
+└ 勝率: {trades['win_rate']:.1f}%
+
+💵 損益
+├ 総利益: ¥{pnl['gross_profit']:,.0f}
+├ 総損失: ¥{pnl['gross_loss']:,.0f}
+├ 純利益: ¥{pnl['net_pnl']:,.0f}
+├ Profit Factor: {pnl['profit_factor']:.2f}
+├ 平均勝ち: ¥{pnl['avg_win']:,.0f}
+├ 平均負け: ¥{pnl['avg_loss']:,.0f}
+└ 勝ち/負け比: {pnl['avg_win_loss_ratio']:.2f}:1
+
+📊 リターン
+├ 税引前: {returns['gross_return_pct']:+.1f}%
+├ 税引後: {returns['after_tax_return_pct']:+.1f}%
+└ 最大DD: {returns['max_drawdown_pct']:.1f}%
+
+🏛️ 税金（年間）
+├ 課税所得: ¥{tax['taxable_income']:,.0f}
+├ 所得税: ¥{tax['income_tax']:,.0f}
+├ 住民税: ¥{tax['resident_tax']:,.0f}
+├ 合計税額: ¥{tax['total_tax']:,.0f}
+├ 実効税率: {tax['effective_rate_pct']:.1f}%
+└ 税引後利益: ¥{tax['after_tax_profit']:,.0f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+    async def generate_yearly_tax_report(self, capital: float) -> bool:
+        """
+        年次税金レポートを生成・送信.
+
+        Args:
+            capital: 現在の資本
+
+        Returns:
+            送信成功したかどうか
+        """
+        year = date.today().year
+        year_start = date(year, 1, 1)
+        year_end = date.today()
+
+        # 今年の取引を取得
+        trades = self.trade_repo.get_trades_by_period(
+            year_start.isoformat(),
+            year_end.isoformat(),
+        )
+
+        if not trades:
+            logger.info(f"No trades for year {year}")
+            return False
+
+        # 年初資本を推定
+        daily_records = self.daily_pnl_repo.get_by_period(
+            year_start.isoformat(),
+            year_end.isoformat(),
+        )
+        initial_capital = daily_records[0].capital_start if daily_records else capital
+
+        # レポート生成
+        report = self.generate_backtest_report_with_tax(
+            initial_capital=initial_capital or capital,
+            final_capital=capital,
+            trades=trades,
+            start_date=year_start.isoformat(),
+            end_date=year_end.isoformat(),
+        )
+
+        # Telegramに送信
+        formatted = self.format_backtest_report(report)
+        return await self.telegram_bot.send_message(formatted)
