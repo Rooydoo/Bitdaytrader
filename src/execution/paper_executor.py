@@ -603,6 +603,23 @@ class PaperTradingExecutor:
                 }
                 for p in self.closed_positions
             ],
+            # Save open positions
+            "open_positions": [
+                {
+                    "position_id": p.position_id,
+                    "symbol": p.symbol,
+                    "side": p.side.value,
+                    "entry_price": p.entry_price,
+                    "size": p.size,
+                    "remaining_size": p.remaining_size,
+                    "stop_loss": p.stop_loss,
+                    "take_profit_levels": p.take_profit_levels,
+                    "entry_time": p.entry_time.isoformat(),
+                    "realized_pnl": p.realized_pnl,
+                    "confidence": p.confidence,
+                }
+                for p in self.positions.values()
+            ],
         }
 
         with open(filepath, "w") as f:
@@ -653,7 +670,28 @@ class PaperTradingExecutor:
                 for p in state["closed_positions"]
             ]
 
-            logger.info(f"Paper trading state loaded from {filepath}")
+            # Reconstruct open positions
+            self.positions = {}
+            for p in state.get("open_positions", []):
+                position = PaperPosition(
+                    position_id=p["position_id"],
+                    symbol=p["symbol"],
+                    side=PaperPositionSide(p["side"]),
+                    entry_price=p["entry_price"],
+                    size=p["size"],
+                    stop_loss=p["stop_loss"],
+                    take_profit_levels=[tuple(tp) for tp in p.get("take_profit_levels", [])],
+                    entry_time=datetime.fromisoformat(p["entry_time"]),
+                    realized_pnl=p.get("realized_pnl", 0.0),
+                    confidence=p.get("confidence", 0.0),
+                )
+                position.remaining_size = p.get("remaining_size", p["size"])
+                self.positions[p["position_id"]] = position
+
+            logger.info(
+                f"Paper trading state loaded from {filepath}. "
+                f"Open positions: {len(self.positions)}"
+            )
             return True
 
         except Exception as e:
