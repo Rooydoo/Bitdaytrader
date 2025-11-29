@@ -189,3 +189,36 @@ cron-setup:
 	@echo ""
 	@echo "*/15 * * * * cd $$(pwd) && .venv/bin/python -m src.main >> logs/cron.log 2>&1"
 	@echo ""
+
+# Systemd service (recommended for production)
+service-install:
+	@echo "Installing systemd service..."
+	cp deploy/bitdaytrader.service /etc/systemd/system/
+	systemctl daemon-reload
+	@echo "Service installed. Use 'make service-start' to start."
+
+service-start:
+	systemctl start bitdaytrader
+	systemctl enable bitdaytrader
+	@echo "Service started and enabled on boot."
+
+service-stop:
+	systemctl stop bitdaytrader
+	@echo "Service stopped."
+
+service-restart:
+	systemctl restart bitdaytrader
+	@echo "Service restarted."
+
+service-status:
+	systemctl status bitdaytrader
+
+service-logs:
+	journalctl -u bitdaytrader -f
+
+service-uninstall:
+	systemctl stop bitdaytrader || true
+	systemctl disable bitdaytrader || true
+	rm -f /etc/systemd/system/bitdaytrader.service
+	systemctl daemon-reload
+	@echo "Service uninstalled."
