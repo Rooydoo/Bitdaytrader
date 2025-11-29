@@ -205,9 +205,9 @@ class TradeFilter:
             (should_trade: bool, reason: str)
         """
         checks = [
-            # 確信度チェック
-            (signal['confidence'] >= 0.65,
-             f"確信度不足: {signal['confidence']:.1%} < 65%"),
+            # 確信度チェック（方向別閾値: LONG 75%, SHORT 80%）
+            (signal['confidence'] >= self.get_confidence_threshold(signal['direction']),
+             f"確信度不足: {signal['confidence']:.1%} < {self.get_confidence_threshold(signal['direction']):.0%}"),
 
             # スプレッドチェック
             (market_data['spread_bps'] <= 5,
@@ -217,9 +217,9 @@ class TradeFilter:
             (market_data['volume_ratio'] >= 0.8,
              f"出来高不足: {market_data['volume_ratio']:.1%} < 80%"),
 
-            # 日次取引回数制限
-            (self.daily_trade_count < 5,
-             f"日次取引上限: {self.daily_trade_count} >= 5"),
+            # 日次取引回数制限（税金効率のため削減）
+            (self.daily_trade_count < 3,
+             f"日次取引上限: {self.daily_trade_count} >= 3"),
 
             # 日次損失制限
             (self.daily_loss < 0.03,
@@ -293,13 +293,22 @@ class PositionSizer:
 class TakeProfitManager:
     """分割利確マネージャー"""
 
-    def __init__(self):
-        # (R倍率, 決済比率)
-        self.tp_levels = [
-            (1.5, 0.50),   # 1.5R到達で50%決済
-            (2.5, 0.30),   # 2.5R到達で30%決済
-            (4.0, 0.20),   # 4.0R到達で残り全決済
-        ]
+    def __init__(self, direction: str = 'long'):
+        # (R倍率, 決済比率) - 方向別に設定
+        if direction == 'long':
+            # LONG: 利益を伸ばす設定
+            self.tp_levels = [
+                (2.0, 0.33),   # 2.0R到達で33%決済
+                (3.0, 0.33),   # 3.0R到達で33%決済
+                (5.0, 0.34),   # 5.0R到達で残り全決済
+            ]
+        else:
+            # SHORT: 早めに利確する設定
+            self.tp_levels = [
+                (1.5, 0.40),   # 1.5R到達で40%決済
+                (2.0, 0.35),   # 2.0R到達で35%決済
+                (3.0, 0.25),   # 3.0R到達で残り全決済
+            ]
 
     def check_tp(self,
                  current_price: float,
