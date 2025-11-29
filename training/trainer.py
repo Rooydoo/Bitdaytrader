@@ -348,7 +348,7 @@ class ModelTrainer:
         self,
         df: pd.DataFrame,
         model: lgb.LGBMClassifier,
-        confidence_threshold: float = 0.65,
+        confidence_threshold: float = 0.75,  # Increased for higher quality signals
         initial_capital: float = 1_000_000,
     ) -> dict[str, Any]:
         """
@@ -357,7 +357,7 @@ class ModelTrainer:
         Args:
             df: OHLCV DataFrame
             model: Trained model
-            confidence_threshold: Minimum confidence for trading
+            confidence_threshold: Minimum confidence for trading (default: 0.75 for LONG)
             initial_capital: Starting capital
 
         Returns:

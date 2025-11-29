@@ -119,26 +119,26 @@ class RiskManager:
 
     def __init__(
         self,
-        # LONG settings
+        # LONG settings - 確信度閾値を75%に引き上げ
         long_risk_per_trade: float = 0.02,
         long_max_position_size: float = 0.10,
-        long_max_daily_trades: int = 3,
-        long_confidence_threshold: float = 0.65,
+        long_max_daily_trades: int = 2,  # 3→2に削減（税金効率化）
+        long_confidence_threshold: float = 0.75,  # 65%→75%に引き上げ
         long_sl_atr_multiple: float = 2.0,
         long_tp_levels: list[tuple[float, float]] | None = None,
-        # SHORT settings (stricter by default)
+        # SHORT settings (stricter by default) - 確信度閾値を80%に引き上げ
         short_risk_per_trade: float = 0.015,
         short_max_position_size: float = 0.07,
-        short_max_daily_trades: int = 2,
-        short_confidence_threshold: float = 0.70,
+        short_max_daily_trades: int = 1,  # 2→1に削減（税金効率化）
+        short_confidence_threshold: float = 0.80,  # 70%→80%に引き上げ
         short_sl_atr_multiple: float = 1.5,
         short_tp_levels: list[tuple[float, float]] | None = None,
-        # Global settings
+        # Global settings - 取引頻度を制限
         daily_loss_limit: float = 0.03,
         weekly_loss_limit: float = 0.07,
         monthly_loss_limit: float = 0.12,
         max_drawdown_limit: float = 0.15,
-        max_daily_trades: int = 5,
+        max_daily_trades: int = 3,  # 5→3に削減（税金効率化）
         max_consecutive_losses: int = 5,
         # Losing streak risk reduction settings
         losing_streak_config: LosingStreakConfig | None = None,
@@ -157,24 +157,26 @@ class RiskManager:
             max_consecutive_losses: Stop after N consecutive losses (default: 5)
             losing_streak_config: Configuration for losing streak risk reduction
         """
-        # LONG configuration
+        # LONG configuration - 利益を伸ばすためTP引き上げ
         self.long_config = DirectionConfig(
             risk_per_trade=long_risk_per_trade,
             max_position_size=long_max_position_size,
             max_daily_trades=long_max_daily_trades,
             confidence_threshold=long_confidence_threshold,
             sl_atr_multiple=long_sl_atr_multiple,
-            tp_levels=long_tp_levels or [(1.5, 0.5), (2.5, 0.3), (4.0, 0.2)],
+            # 期待R比: 0.33×2.0 + 0.33×3.0 + 0.34×5.0 = 3.35R（全て到達時）
+            tp_levels=long_tp_levels or [(2.0, 0.33), (3.0, 0.33), (5.0, 0.34)],
         )
 
-        # SHORT configuration (stricter)
+        # SHORT configuration (stricter) - 早めに利確だがTP1は1.5R確保
         self.short_config = DirectionConfig(
             risk_per_trade=short_risk_per_trade,
             max_position_size=short_max_position_size,
             max_daily_trades=short_max_daily_trades,
             confidence_threshold=short_confidence_threshold,
             sl_atr_multiple=short_sl_atr_multiple,
-            tp_levels=short_tp_levels or [(1.0, 0.5), (1.5, 0.3), (2.5, 0.2)],
+            # 期待R比: 0.40×1.5 + 0.35×2.0 + 0.25×3.0 = 2.05R（全て到達時）
+            tp_levels=short_tp_levels or [(1.5, 0.40), (2.0, 0.35), (3.0, 0.25)],
         )
 
         # Global limits

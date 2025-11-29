@@ -25,18 +25,18 @@ class TestRiskManagerBasics:
         assert rm.weekly_loss_limit == 0.07
         assert rm.monthly_loss_limit == 0.12
         assert rm.max_drawdown_limit == 0.15
-        assert rm.max_daily_trades == 5
+        assert rm.max_daily_trades == 3  # Reduced for tax efficiency
         assert rm.max_consecutive_losses == 5
 
         # Check LONG config (more aggressive)
         assert rm.long_config.risk_per_trade == 0.02
         assert rm.long_config.max_position_size == 0.10
-        assert rm.long_config.confidence_threshold == 0.65
+        assert rm.long_config.confidence_threshold == 0.75  # Increased for higher quality signals
 
         # Check SHORT config (more conservative)
         assert rm.short_config.risk_per_trade == 0.015
         assert rm.short_config.max_position_size == 0.07
-        assert rm.short_config.confidence_threshold == 0.70
+        assert rm.short_config.confidence_threshold == 0.80  # Increased for higher quality signals
 
     def test_get_config_by_side(self):
         """Test getting correct config by side."""
@@ -382,17 +382,17 @@ class TestConfidenceCheck:
 
     def test_confidence_below_threshold_rejected(self):
         """Test low confidence is rejected."""
-        rm = RiskManager(long_confidence_threshold=0.70)
+        rm = RiskManager(long_confidence_threshold=0.75)
 
-        result = rm.check_confidence(0.65, "BUY")
+        result = rm.check_confidence(0.70, "BUY")
         assert not result.allowed
         assert "confidence" in result.reason.lower()
 
     def test_confidence_above_threshold_accepted(self):
         """Test high confidence is accepted."""
-        rm = RiskManager(long_confidence_threshold=0.70)
+        rm = RiskManager(long_confidence_threshold=0.75)
 
-        result = rm.check_confidence(0.75, "BUY")
+        result = rm.check_confidence(0.80, "BUY")
         assert result.allowed
 
 

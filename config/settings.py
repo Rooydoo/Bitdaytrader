@@ -66,22 +66,25 @@ class Settings(BaseSettings):
     margin_call_threshold: float = Field(default=0.75, description="Margin maintenance ratio")
 
     # Risk Management - LONG positions (default/less risky)
+    # 確信度閾値を75%に引き上げ（高確信度のみ取引）
     long_risk_per_trade: float = Field(default=0.02, description="Risk per trade for LONG (2%)")
     long_max_position_size: float = Field(default=0.10, description="Max position size for LONG (10%)")
-    long_max_daily_trades: int = Field(default=3, description="Max LONG trades per day")
-    long_confidence_threshold: float = Field(default=0.65, description="Min confidence for LONG")
+    long_max_daily_trades: int = Field(default=2, description="Max LONG trades per day")
+    long_confidence_threshold: float = Field(default=0.75, description="Min confidence for LONG (75%)")
     long_sl_atr_multiple: float = Field(default=2.0, description="Stop loss ATR multiple for LONG")
 
     # Risk Management - SHORT positions (stricter/higher risk)
+    # ショートはさらに高い確信度を要求（80%）
     short_risk_per_trade: float = Field(default=0.015, description="Risk per trade for SHORT (1.5%)")
     short_max_position_size: float = Field(default=0.07, description="Max position size for SHORT (7%)")
-    short_max_daily_trades: int = Field(default=2, description="Max SHORT trades per day")
-    short_confidence_threshold: float = Field(default=0.70, description="Min confidence for SHORT (stricter)")
+    short_max_daily_trades: int = Field(default=1, description="Max SHORT trades per day")
+    short_confidence_threshold: float = Field(default=0.80, description="Min confidence for SHORT (80%)")
     short_sl_atr_multiple: float = Field(default=1.5, description="Stop loss ATR multiple for SHORT (tighter)")
 
     # Global Risk Limits
+    # 取引頻度を制限（税金コスト削減のため）
     daily_loss_limit: float = Field(default=0.03, description="Daily loss limit (3%)")
-    max_daily_trades: int = Field(default=5, description="Max total trades per day")
+    max_daily_trades: int = Field(default=3, description="Max total trades per day (reduced for tax efficiency)")
 
     # Model Settings
     model_path: str = Field(default="models/lightgbm_model.joblib", description="Model file path")
@@ -118,20 +121,26 @@ class Settings(BaseSettings):
     )
 
     # Take Profit Levels - LONG (R multiples, can let profits run)
-    long_tp_level_1: float = Field(default=1.5, description="First TP level for LONG (R)")
-    long_tp_ratio_1: float = Field(default=0.5, description="First TP ratio for LONG")
-    long_tp_level_2: float = Field(default=2.5, description="Second TP level for LONG (R)")
-    long_tp_ratio_2: float = Field(default=0.3, description="Second TP ratio for LONG")
-    long_tp_level_3: float = Field(default=4.0, description="Third TP level for LONG (R)")
-    long_tp_ratio_3: float = Field(default=0.2, description="Third TP ratio for LONG")
+    # 利益を伸ばすため、最初の利確比率を減らし、R倍率を引き上げ
+    # 期待R比: 0.33×2.0 + 0.33×3.0 + 0.34×5.0 = 3.35R（全て到達時）
+    # 現実的な期待R比: 約1.8-2.0R
+    long_tp_level_1: float = Field(default=2.0, description="First TP level for LONG (R)")
+    long_tp_ratio_1: float = Field(default=0.33, description="First TP ratio for LONG")
+    long_tp_level_2: float = Field(default=3.0, description="Second TP level for LONG (R)")
+    long_tp_ratio_2: float = Field(default=0.33, description="Second TP ratio for LONG")
+    long_tp_level_3: float = Field(default=5.0, description="Third TP level for LONG (R)")
+    long_tp_ratio_3: float = Field(default=0.34, description="Third TP ratio for LONG")
 
     # Take Profit Levels - SHORT (R multiples, take profits faster)
-    short_tp_level_1: float = Field(default=1.0, description="First TP level for SHORT (R)")
-    short_tp_ratio_1: float = Field(default=0.5, description="First TP ratio for SHORT")
-    short_tp_level_2: float = Field(default=1.5, description="Second TP level for SHORT (R)")
-    short_tp_ratio_2: float = Field(default=0.3, description="Second TP ratio for SHORT")
-    short_tp_level_3: float = Field(default=2.5, description="Third TP level for SHORT (R)")
-    short_tp_ratio_3: float = Field(default=0.2, description="Third TP ratio for SHORT")
+    # ショートはリスクが高いため、早めに利確（ただし最低1.5R確保）
+    # 期待R比: 0.40×1.5 + 0.35×2.0 + 0.25×3.0 = 2.05R（全て到達時）
+    # 現実的な期待R比: 約1.3-1.5R
+    short_tp_level_1: float = Field(default=1.5, description="First TP level for SHORT (R)")
+    short_tp_ratio_1: float = Field(default=0.40, description="First TP ratio for SHORT")
+    short_tp_level_2: float = Field(default=2.0, description="Second TP level for SHORT (R)")
+    short_tp_ratio_2: float = Field(default=0.35, description="Second TP ratio for SHORT")
+    short_tp_level_3: float = Field(default=3.0, description="Third TP level for SHORT (R)")
+    short_tp_ratio_3: float = Field(default=0.25, description="Third TP ratio for SHORT")
 
 
     def get_symbol_allocations(self, use_runtime: bool = True) -> dict[str, float]:
