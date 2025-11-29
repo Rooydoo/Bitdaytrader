@@ -81,13 +81,15 @@ class TelegramBot:
         size: float,
         stop_loss: float,
         confidence: float,
+        is_paper: bool = False,
     ) -> bool:
         """Send notification when a trade is opened."""
         direction = "LONG" if side == "BUY" else "SHORT"
         emoji = "📈" if side == "BUY" else "📉"
+        paper_tag = "[PAPER] " if is_paper else ""
 
         text = f"""
-{emoji} <b>新規ポジション</b>
+{emoji} <b>{paper_tag}新規ポジション</b>
 
 通貨: {symbol}
 方向: {direction}
@@ -107,13 +109,15 @@ class TelegramBot:
         pnl: float,
         pnl_percent: float,
         reason: str = "TP",
+        is_paper: bool = False,
     ) -> bool:
         """Send notification when a trade is closed."""
         emoji = "✅" if pnl >= 0 else "❌"
         pnl_sign = "+" if pnl >= 0 else ""
+        paper_tag = "[PAPER] " if is_paper else ""
 
         text = f"""
-{emoji} <b>ポジション決済</b>
+{emoji} <b>{paper_tag}ポジション決済</b>
 
 通貨: {symbol}
 方向: {side}
@@ -131,10 +135,13 @@ class TelegramBot:
         entry_price: float,
         stop_price: float,
         pnl: float,
+        is_paper: bool = False,
     ) -> bool:
         """Send notification when stop loss is triggered."""
+        paper_tag = "[PAPER] " if is_paper else ""
+
         text = f"""
-🛑 <b>損切り発動</b>
+🛑 <b>{paper_tag}損切り発動</b>
 
 通貨: {symbol}
 方向: {side}
