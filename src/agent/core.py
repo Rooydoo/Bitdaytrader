@@ -10,10 +10,11 @@ from loguru import logger
 
 from src.agent.action import ActionExecutor, ExecutionSummary
 from src.agent.claude_client import ClaudeClient
-from src.agent.decision import AgentDecision, AutonomyLevel
+from src.agent.decision import AgentAction, AgentDecision, ActionType, AutonomyLevel
 from src.agent.memory import AgentMemory, SignalOutcome
 from src.agent.perception import AgentContext, PerceptionModule
 from src.agent.schedule import Scheduler, TaskFrequency, DEFAULT_TASKS
+from src.features.registry import FeatureRegistry
 from src.utils.timezone import now_jst
 
 
@@ -36,6 +37,7 @@ class MetaAgent:
         telegram_token: str | None = None,
         telegram_chat_id: str | None = None,
         db_path: str = "data/agent_memory.db",
+        feature_registry_path: str = "data/feature_registry.json",
         check_interval: int = 60,  # seconds
     ) -> None:
         """
@@ -47,6 +49,7 @@ class MetaAgent:
             telegram_token: Telegram bot token
             telegram_chat_id: Telegram chat ID
             db_path: Path to agent memory database
+            feature_registry_path: Path to feature registry config
             check_interval: Interval between state checks (seconds)
         """
         self.api_base_url = api_base_url
@@ -56,11 +59,13 @@ class MetaAgent:
         self.claude = ClaudeClient(api_key=anthropic_api_key)
         self.memory = AgentMemory(db_path=db_path)
         self.perception = PerceptionModule(api_base_url=api_base_url)
+        self.feature_registry = FeatureRegistry(config_path=feature_registry_path)
         self.executor = ActionExecutor(
             api_base_url=api_base_url,
             telegram_token=telegram_token,
             telegram_chat_id=telegram_chat_id,
             memory=self.memory,
+            feature_registry=self.feature_registry,
         )
         self.scheduler = Scheduler()
 
@@ -126,6 +131,15 @@ class MetaAgent:
             frequency=TaskFrequency.WEEKLY,
             run_time=time(20, 0),
             run_day=6,  # Sunday
+        )
+
+        # Feature optimization on Saturday 19:00 JST (weekly)
+        self.scheduler.add_task(
+            name="feature_optimization",
+            task_func=self._task_feature_optimization,
+            frequency=TaskFrequency.WEEKLY,
+            run_time=time(19, 0),
+            run_day=5,  # Saturday
         )
 
         logger.info("Scheduled tasks configured")
@@ -818,6 +832,122 @@ class MetaAgent:
         await self.executor._send_telegram("\n".join(lines))
         logger.info("Weekly summary sent")
 
+    async def _task_feature_optimization(self) -> None:
+        """
+        Weekly feature optimization task.
+        Analyzes feature performance and recommends changes.
+        """
+        logger.info("Running feature optimization analysis")
+
+        try:
+            # Gather data for analysis
+            feature_summary = self.feature_registry.get_summary()
+            signal_stats = self.memory.get_signal_accuracy_stats(days=7)
+            trades = await self.perception.get_recent_trades(hours=168)  # 7 days
+            trades_data = [t.to_dict() for t in trades] if trades else []
+
+            # Get model performance if available
+            performance = await self.perception.get_performance_metrics()
+            model_performance = performance.to_dict() if performance else {}
+
+            # Ask Claude for feature optimization analysis
+            optimization_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: asyncio.run(
+                    self.claude.analyze_feature_optimization(
+                        feature_registry_summary=feature_summary,
+                        model_performance=model_performance,
+                        signal_accuracy=signal_stats,
+                        recent_trades=trades_data,
+                    )
+                )
+            )
+
+            # Process recommendations
+            recommendations = optimization_result.get("feature_recommendations", [])
+            executed_actions = []
+            proposed_actions = []
+
+            for rec in recommendations[:3]:  # Limit to 3 changes per week
+                feature_name = rec.get("feature_name")
+                action_type = rec.get("action")
+                autonomy = rec.get("autonomy_level", "propose")
+                reason = rec.get("reason", "")
+
+                if action_type == "enable":
+                    action = AgentAction(
+                        action_type=ActionType.FEATURE_TOGGLE,
+                        detail=f"特徴量 '{feature_name}' を有効化",
+                        autonomy_level=AutonomyLevel(autonomy),
+                        reasoning=reason,
+                        parameters={"feature_name": feature_name, "enabled": True},
+                    )
+                elif action_type == "disable":
+                    action = AgentAction(
+                        action_type=ActionType.FEATURE_TOGGLE,
+                        detail=f"特徴量 '{feature_name}' を無効化",
+                        autonomy_level=AutonomyLevel(autonomy),
+                        reasoning=reason,
+                        parameters={"feature_name": feature_name, "enabled": False},
+                    )
+                elif action_type == "update_importance":
+                    action = AgentAction(
+                        action_type=ActionType.FEATURE_IMPORTANCE_UPDATE,
+                        detail=f"特徴量 '{feature_name}' の重要度更新",
+                        autonomy_level=AutonomyLevel.AUTO_EXECUTE,
+                        reasoning=reason,
+                        parameters={"importance": {feature_name: rec.get("importance_score", 0.5)}},
+                    )
+                else:
+                    continue
+
+                # Execute or propose based on autonomy level
+                if autonomy in ["auto_execute", "auto_execute_report"]:
+                    result = await self.executor.execute_actions([action])
+                    executed_actions.append((feature_name, action_type, result.overall_success))
+                else:
+                    proposed_actions.append((feature_name, action_type, reason))
+
+            # Build and send report
+            report_lines = [
+                f"🔧 <b>週次特徴量最適化レポート</b>",
+                f"",
+                f"<b>分析結果:</b>",
+                f"{optimization_result.get('analysis', 'N/A')[:500]}",
+                f"",
+            ]
+
+            if executed_actions:
+                report_lines.append("<b>実行済み変更:</b>")
+                for name, action, success in executed_actions:
+                    status = "✅" if success else "❌"
+                    report_lines.append(f"{status} {name}: {action}")
+
+            if proposed_actions:
+                report_lines.append("\n<b>提案（承認待ち）:</b>")
+                for name, action, reason in proposed_actions:
+                    report_lines.append(f"• {name}: {action}")
+                    report_lines.append(f"  理由: {reason[:100]}")
+
+            if optimization_result.get("retrain_recommended"):
+                report_lines.append(f"\n⚠️ <b>再学習推奨:</b>")
+                report_lines.append(optimization_result.get("retrain_reason", "")[:200])
+
+            extended_suggestions = optimization_result.get("extended_features_to_consider", [])
+            if extended_suggestions:
+                report_lines.append(f"\n💡 <b>今後検討すべき特徴量:</b>")
+                for feat in extended_suggestions[:3]:
+                    report_lines.append(f"• {feat}")
+
+            await self.executor._send_telegram("\n".join(report_lines))
+            logger.info(f"Feature optimization completed: {len(executed_actions)} executed, {len(proposed_actions)} proposed")
+
+        except Exception as e:
+            logger.error(f"Feature optimization failed: {e}")
+            await self.executor._send_telegram(
+                f"❌ 特徴量最適化でエラーが発生しました: {e}"
+            )
+
     # ==================== Trigger Handling ====================
 
     async def _check_triggers(self) -> None:
@@ -856,6 +986,11 @@ class MetaAgent:
                     elif trigger_name == "emergency_analysis":
                         context = trigger_data.get("context", "")
                         await self._emergency_analysis(context)
+                        triggers[trigger_name]["status"] = "completed"
+                        triggers[trigger_name]["completed_at"] = now_jst().isoformat()
+
+                    elif trigger_name == "feature_optimization":
+                        await self._task_feature_optimization()
                         triggers[trigger_name]["status"] = "completed"
                         triggers[trigger_name]["completed_at"] = now_jst().isoformat()
 

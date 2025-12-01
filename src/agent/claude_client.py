@@ -331,6 +331,100 @@ JSON形式で回答してください。"""
             logger.error(f"Failed to generate daily review: {e}")
             return f"日次レビュー生成エラー: {e}"
 
+    async def analyze_feature_optimization(
+        self,
+        feature_registry_summary: dict,
+        model_performance: dict,
+        signal_accuracy: dict,
+        recent_trades: list[dict],
+    ) -> dict:
+        """
+        Analyze features and recommend optimizations.
+
+        Args:
+            feature_registry_summary: Summary of all features and their status
+            model_performance: Model backtest/live performance metrics
+            signal_accuracy: Signal accuracy statistics
+            recent_trades: Recent trade data for analysis
+
+        Returns:
+            Dict with recommendations for feature changes
+        """
+        prompt = f"""特徴量の最適化分析を実施してください。
+
+## 現在の特徴量設定
+{json.dumps(feature_registry_summary, ensure_ascii=False, indent=2)}
+
+## モデルパフォーマンス
+{json.dumps(model_performance, ensure_ascii=False, indent=2)}
+
+## シグナル精度統計
+{json.dumps(signal_accuracy, ensure_ascii=False, indent=2)}
+
+## 最近のトレード（直近20件）
+{json.dumps(recent_trades[:20], ensure_ascii=False, indent=2)}
+
+以下を分析してください：
+1. 現在有効な特徴量の有効性評価
+2. 無効化されているが有効化すべき特徴量
+3. 有効だが無効化を検討すべき特徴量
+4. 新しい特徴量の追加提案（FeatureRegistryにあるものから）
+
+以下のJSON形式で回答してください：
+```json
+{{
+    "analysis": "全体的な分析結果",
+    "feature_recommendations": [
+        {{
+            "feature_name": "特徴量名",
+            "action": "enable|disable|update_importance",
+            "reason": "理由",
+            "importance_score": 0.0-1.0（オプション）,
+            "priority": "high|medium|low",
+            "autonomy_level": "auto_execute|auto_execute_report|propose"
+        }}
+    ],
+    "retrain_recommended": true/false,
+    "retrain_reason": "再学習が推奨される場合の理由",
+    "extended_features_to_consider": ["将来追加を検討すべき外部特徴量"],
+    "confidence": 0.0-1.0
+}}
+```
+
+注意：
+- 「auto_execute」はリスクが低い変更（重要度スコア更新）に使用
+- 「auto_execute_report」は中程度の変更（特徴量のオン/オフ）に使用
+- 「propose」はリスクが高い変更（複数特徴量の同時変更、再学習提案）に使用
+- 一度に多くの変更を行わない（最大3つまで）
+- パフォーマンスが安定している場合は変更を控える"""
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2048,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            raw = response.content[0].text
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw)
+            if json_match:
+                return json.loads(json_match.group(1))
+            else:
+                start = raw.find('{')
+                end = raw.rfind('}') + 1
+                return json.loads(raw[start:end])
+
+        except Exception as e:
+            logger.error(f"Failed to analyze feature optimization: {e}")
+            return {
+                "analysis": f"分析エラー: {e}",
+                "feature_recommendations": [],
+                "retrain_recommended": False,
+                "confidence": 0.0,
+            }
+
     async def analyze_signal_outcome(
         self,
         signal: dict,

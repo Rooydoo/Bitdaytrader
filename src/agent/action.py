@@ -1,9 +1,11 @@
 """Action module for Meta AI Agent - executes decisions."""
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import aiohttp
 from loguru import logger
@@ -11,6 +13,9 @@ from loguru import logger
 from src.agent.decision import AgentAction, ActionType, AutonomyLevel
 from src.agent.memory import AgentMemory
 from src.utils.timezone import now_jst
+
+if TYPE_CHECKING:
+    from src.features.registry import FeatureRegistry
 
 
 @dataclass
@@ -65,6 +70,7 @@ class ActionExecutor:
         telegram_token: str | None = None,
         telegram_chat_id: str | None = None,
         memory: AgentMemory | None = None,
+        feature_registry: "FeatureRegistry | None" = None,
     ) -> None:
         """
         Initialize action executor.
@@ -74,11 +80,13 @@ class ActionExecutor:
             telegram_token: Telegram bot token for notifications
             telegram_chat_id: Telegram chat ID for notifications
             memory: Agent memory for recording changes
+            feature_registry: Feature registry for toggling features
         """
         self.api_base_url = api_base_url.rstrip("/")
         self.telegram_token = telegram_token
         self.telegram_chat_id = telegram_chat_id
         self.memory = memory
+        self.feature_registry = feature_registry
         self._http_session: aiohttp.ClientSession | None = None
 
     async def _get_http_session(self) -> aiohttp.ClientSession:
@@ -279,9 +287,21 @@ class ActionExecutor:
             )
 
         try:
-            # Update in memory/feature registry
-            if self.memory:
-                self.memory.toggle_feature(feature_name, enabled)
+            # Update in feature registry
+            if self.feature_registry:
+                if enabled:
+                    success = self.feature_registry.enable_feature(feature_name)
+                else:
+                    success = self.feature_registry.disable_feature(feature_name)
+
+                if not success:
+                    return ActionResult(
+                        action=action,
+                        success=False,
+                        message=f"Failed to {'enable' if enabled else 'disable'} feature {feature_name}",
+                    )
+            else:
+                logger.warning("No feature registry configured, feature toggle skipped")
 
             # Send notification
             status = "有効化" if enabled else "無効化"
@@ -320,15 +340,17 @@ class ActionExecutor:
             )
 
         try:
-            if self.memory:
-                for feature_name, score in importance_data.items():
-                    self.memory.update_feature_importance(feature_name, score)
+            if self.feature_registry:
+                updated = self.feature_registry.update_importance_batch(importance_data)
+                logger.info(f"Feature importance updated via registry: {updated} features")
+            else:
+                logger.warning("No feature registry configured, importance update skipped")
+                updated = 0
 
-            logger.info(f"Feature importance updated: {len(importance_data)} features")
             return ActionResult(
                 action=action,
                 success=True,
-                message=f"Updated importance for {len(importance_data)} features",
+                message=f"Updated importance for {updated} features",
                 details={"features_updated": list(importance_data.keys())},
             )
 

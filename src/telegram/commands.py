@@ -83,6 +83,7 @@ class TelegramCommandHandler:
 /review - 日次反省会を実行
 /verify - シグナル検証を実行
 /analyze [理由] - 緊急分析を実行
+/features - 特徴量最適化を実行
 """
         await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -627,6 +628,42 @@ class TelegramCommandHandler:
             logger.error(f"Error triggering analysis: {e}")
             await update.message.reply_text(f"エラー: {e}")
 
+    async def trigger_features(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /features command - trigger feature optimization."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            trigger_path = Path("data/agent_triggers.json")
+            trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+            triggers = {}
+            if trigger_path.exists():
+                with open(trigger_path) as f:
+                    triggers = json.load(f)
+
+            triggers["feature_optimization"] = {
+                "requested_at": datetime.now().isoformat(),
+                "status": "pending",
+                "source": "telegram",
+            }
+
+            with open(trigger_path, "w") as f:
+                json.dump(triggers, f, indent=2)
+
+            await update.message.reply_text(
+                "🔧 <b>特徴量最適化をトリガーしました</b>\n\n"
+                "エージェントが特徴量のパフォーマンスを分析し、\n"
+                "改善提案を行います。\n"
+                "完了後、結果が通知されます。",
+                parse_mode="HTML"
+            )
+            logger.info("Feature optimization triggered via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error triggering feature optimization: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
     def _check_authorized(self, update: Update) -> bool:
         """Check if the message is from authorized chat."""
         if str(update.effective_chat.id) != self.chat_id:
@@ -697,6 +734,7 @@ class TelegramCommandHandler:
         app.add_handler(CommandHandler("review", self.trigger_review))
         app.add_handler(CommandHandler("verify", self.trigger_verify))
         app.add_handler(CommandHandler("analyze", self.trigger_analyze))
+        app.add_handler(CommandHandler("features", self.trigger_features))
 
         return app
 
