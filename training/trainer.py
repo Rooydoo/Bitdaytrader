@@ -1,5 +1,7 @@
 """Model training with walk-forward validation."""
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ import pandas as pd
 from loguru import logger
 
 from src.features.calculator import FeatureCalculator
+from src.features.registry import FeatureRegistry
 
 
 class ModelTrainer:
@@ -22,6 +25,7 @@ class ModelTrainer:
         backtest_months: int = 2,
         prediction_horizon: int = 4,
         price_threshold: float = 0.003,
+        feature_registry: FeatureRegistry | None = None,
     ) -> None:
         """
         Initialize trainer.
@@ -31,12 +35,14 @@ class ModelTrainer:
             backtest_months: Months of data for backtesting
             prediction_horizon: Prediction horizon in periods
             price_threshold: Price change threshold for positive label (0.3% = 0.003)
+            feature_registry: Optional registry for dynamic feature management
         """
         self.training_months = training_months
         self.backtest_months = backtest_months
         self.prediction_horizon = prediction_horizon
         self.price_threshold = price_threshold
-        self.feature_calculator = FeatureCalculator()
+        self.feature_registry = feature_registry
+        self.feature_calculator = FeatureCalculator(registry=feature_registry)
 
     def prepare_data(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
         """
@@ -61,10 +67,19 @@ class ModelTrainer:
             threshold=self.price_threshold,
         )
 
+        # Get active feature names (supports both static and dynamic)
+        feature_names = self.feature_calculator.active_feature_names
+
+        # Filter to available columns only
+        available_features = [f for f in feature_names if f in df_features.columns]
+
         # Align features and labels (drop last rows without labels)
         valid_idx = labels.notna()
-        features = df_features[FeatureCalculator.FEATURE_NAMES][valid_idx]
+        features = df_features[available_features][valid_idx]
         labels = labels[valid_idx]
+
+        # Store the feature names used for this training
+        self._trained_feature_names = available_features
 
         return features, labels
 
@@ -334,15 +349,25 @@ class ModelTrainer:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Use trained feature names if available, otherwise active features
+        feature_names = getattr(self, "_trained_feature_names", None)
+        if feature_names is None:
+            feature_names = self.feature_calculator.active_feature_names
+
         save_data = {
             "model": model,
             "metrics": metrics,
             "timestamp": datetime.now().isoformat(),
-            "feature_names": FeatureCalculator.FEATURE_NAMES,
+            "feature_names": feature_names,
+            # Also save registry state for reproducibility
+            "registry_state": (
+                self.feature_registry.get_summary()
+                if self.feature_registry else None
+            ),
         }
 
         joblib.dump(save_data, path)
-        logger.info(f"Model saved to {path}")
+        logger.info(f"Model saved to {path} with {len(feature_names)} features")
 
     def backtest(
         self,

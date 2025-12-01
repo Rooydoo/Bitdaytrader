@@ -103,6 +103,10 @@ class FeatureRegistry:
 
         # Correlation
         "btc_eth_correlation_20": {"category": "correlation", "description": "BTC-ETH相関"},
+
+        # Orderbook features (real-time only)
+        "bid_ask_spread": {"category": "orderbook", "description": "スプレッド（%）"},
+        "orderbook_imbalance": {"category": "orderbook", "description": "板の偏り（-1〜1）"},
     }
 
     def __init__(self, config_path: str = "data/feature_registry.json") -> None:
