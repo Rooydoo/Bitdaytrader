@@ -883,6 +883,71 @@ async def reset_setting(key: str):
     return {"success": True, "message": message}
 
 
+# ============================================
+# Feature Registry Endpoints
+# ============================================
+
+@app.get("/api/features")
+async def get_features():
+    """Get feature registry status."""
+    if not _engine:
+        raise HTTPException(status_code=503, detail="Engine not running")
+
+    summary = _engine.feature_registry.get_summary()
+    enabled = _engine.feature_registry.get_enabled_features()
+
+    return {
+        "summary": summary,
+        "enabled_features": enabled,
+        "core_features": _engine.feature_registry.get_core_features(),
+        "extended_features": _engine.feature_registry.get_extended_features(),
+    }
+
+
+@app.post("/api/features/reload")
+async def reload_features():
+    """Force reload feature registry from file."""
+    if not _engine:
+        raise HTTPException(status_code=503, detail="Engine not running")
+
+    _engine.feature_registry.force_reload()
+
+    return {
+        "success": True,
+        "message": "Feature registry reloaded",
+        "enabled_features": _engine.feature_registry.get_enabled_features(),
+    }
+
+
+@app.post("/api/features/{feature_name}/toggle")
+async def toggle_feature(feature_name: str, enabled: bool = True):
+    """Toggle a feature on/off."""
+    if not _engine:
+        raise HTTPException(status_code=503, detail="Engine not running")
+
+    registry = _engine.feature_registry
+
+    if feature_name not in registry.features:
+        raise HTTPException(status_code=404, detail=f"Unknown feature: {feature_name}")
+
+    if enabled:
+        success = registry.enable_feature(feature_name)
+    else:
+        success = registry.disable_feature(feature_name)
+
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to {'enable' if enabled else 'disable'} feature"
+        )
+
+    return {
+        "success": True,
+        "feature": feature_name,
+        "enabled": enabled,
+    }
+
+
 @app.get("/api/mode")
 async def get_trading_mode():
     """Get current trading mode."""

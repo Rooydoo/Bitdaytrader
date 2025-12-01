@@ -360,3 +360,38 @@ class FeatureRegistry:
         low_importance = [f for f in enabled_extended if f.importance_score < 0.1]
 
         return [f.name for f in sorted(low_importance, key=lambda f: f.importance_score)]
+
+    def reload_if_changed(self) -> bool:
+        """
+        Reload configuration from file if it has been modified.
+
+        Returns:
+            True if configuration was reloaded
+        """
+        if not self.config_path.exists():
+            return False
+
+        try:
+            current_mtime = self.config_path.stat().st_mtime
+            if not hasattr(self, "_last_mtime"):
+                self._last_mtime = current_mtime
+                return False
+
+            if current_mtime > self._last_mtime:
+                logger.info("Feature registry file changed, reloading...")
+                self._load_config()
+                self._last_mtime = current_mtime
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error checking registry file: {e}")
+            return False
+
+    def force_reload(self) -> None:
+        """Force reload configuration from file."""
+        logger.info("Force reloading feature registry")
+        self._load_config()
+        if self.config_path.exists():
+            self._last_mtime = self.config_path.stat().st_mtime

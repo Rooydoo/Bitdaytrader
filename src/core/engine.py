@@ -151,7 +151,11 @@ class TradingEngine:
         logger.info("Starting trading cycle")
 
         try:
-            # 0. Check for overfitting and adjust risk parameters
+            # 0a. Check if feature registry has been updated externally (by agent)
+            if self.feature_registry.reload_if_changed():
+                logger.info("Feature registry reloaded with updated settings")
+
+            # 0b. Check for overfitting and adjust risk parameters
             await self._check_and_respond_to_overfitting()
 
             # 1. Fetch latest data
