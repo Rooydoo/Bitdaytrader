@@ -170,6 +170,9 @@ class ActionExecutor:
             case ActionType.MODEL_RETRAIN_TRIGGER:
                 return await self._execute_model_retrain(action)
 
+            case ActionType.MODEL_EVALUATION:
+                return await self._execute_model_evaluation(action)
+
             case ActionType.EMERGENCY_STOP:
                 return await self._execute_emergency_stop(action)
 
@@ -376,6 +379,20 @@ class ActionExecutor:
             action=action,
             success=True,
             message="Model retrain proposal sent",
+        )
+
+    async def _execute_model_evaluation(self, action: AgentAction) -> ActionResult:
+        """Send model evaluation report."""
+        await self._send_telegram(
+            f"📈 モデル評価レポート\n\n"
+            f"{action.detail}\n\n"
+            f"理由: {action.reasoning}"
+        )
+
+        return ActionResult(
+            action=action,
+            success=True,
+            message="Model evaluation report sent",
         )
 
     async def _execute_emergency_stop(self, action: AgentAction) -> ActionResult:

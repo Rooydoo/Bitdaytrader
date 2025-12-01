@@ -132,15 +132,54 @@ class ClaudeClient:
     "issues": ["検出された問題1", "検出された問題2"],
     "actions": [
         {
-            "type": "param_adjustment|feature_toggle|alert_warning|model_retrain_trigger|emergency_stop|daily_review|signal_verification|no_action|...",
+            "type": "アクションタイプ（下記参照）",
             "detail": "具体的な内容（日本語）",
             "autonomy_level": "auto_execute|auto_execute_report|propose|emergency",
             "reasoning": "この判断の理由（日本語）",
-            "parameters": {"key": "value"}
+            "parameters": {}
         }
     ],
     "confidence": 0.85
 }
+```
+
+## アクションタイプ別パラメータ形式
+
+### param_adjustment / threshold_change
+```json
+{"type": "param_adjustment", "parameters": {"param_name": "long_confidence_threshold", "new_value": 0.80, "old_value": 0.75}}
+```
+利用可能なparam_name: long_confidence_threshold, short_confidence_threshold, long_risk_per_trade, short_risk_per_trade, long_max_position_size, short_max_position_size, max_daily_trades, daily_loss_limit
+
+### feature_toggle
+```json
+{"type": "feature_toggle", "parameters": {"feature_name": "adx_14", "enabled": true}}
+```
+
+### feature_importance_update
+```json
+{"type": "feature_importance_update", "parameters": {"importance": {"adx_14": 0.8, "trend_strength": 0.6}}}
+```
+
+### direction_stop / direction_resume
+```json
+{"type": "direction_stop", "parameters": {"direction": "LONG", "reason": "連続損失"}}
+```
+
+### emergency_stop
+```json
+{"type": "emergency_stop", "parameters": {"mode": "no_new_positions", "message": "急落検知"}}
+```
+
+### alert_info / alert_warning / alert_critical
+```json
+{"type": "alert_warning", "parameters": {}}
+```
+（パラメータ不要、detailに内容を記載）
+
+### no_action
+```json
+{"type": "no_action", "parameters": {}}
 ```
 
 ## 重要な注意事項
