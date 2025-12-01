@@ -849,3 +849,94 @@ class AgentMemory:
             lines.append(f"\n推定インパクト: {sign}¥{stats['total_potential_impact']:,.0f}")
 
         return "\n".join(lines)
+
+    # ==================== Database Maintenance ====================
+
+    def cleanup_old_records(self, retention_days: int = 90) -> dict[str, int]:
+        """
+        Delete records older than retention_days.
+
+        Args:
+            retention_days: Number of days to retain data (default 90)
+
+        Returns:
+            Dict with count of deleted records per table
+        """
+        cutoff = (now_jst() - timedelta(days=retention_days)).isoformat()
+        deleted = {}
+
+        with self._get_connection() as conn:
+            # Clean decisions table
+            cursor = conn.execute(
+                "DELETE FROM decisions WHERE timestamp < ?",
+                (cutoff,)
+            )
+            deleted["decisions"] = cursor.rowcount
+
+            # Clean signal_outcomes table
+            cursor = conn.execute(
+                "DELETE FROM signal_outcomes WHERE timestamp < ?",
+                (cutoff,)
+            )
+            deleted["signal_outcomes"] = cursor.rowcount
+
+            # Clean param_history table
+            cursor = conn.execute(
+                "DELETE FROM param_history WHERE timestamp < ?",
+                (cutoff,)
+            )
+            deleted["param_history"] = cursor.rowcount
+
+            # Clean intervention_analysis table
+            cursor = conn.execute(
+                "DELETE FROM intervention_analysis WHERE timestamp < ?",
+                (cutoff,)
+            )
+            deleted["intervention_analysis"] = cursor.rowcount
+
+            conn.commit()
+
+        total = sum(deleted.values())
+        if total > 0:
+            logger.info(f"Database cleanup: {total} records deleted (retention: {retention_days} days)")
+            logger.debug(f"Cleanup details: {deleted}")
+
+        return deleted
+
+    def vacuum(self) -> None:
+        """
+        Reclaim disk space by running VACUUM.
+        Should be called after cleanup_old_records.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("VACUUM")
+        logger.info("Database vacuumed")
+
+    def get_database_stats(self) -> dict:
+        """Get database size and record counts."""
+        stats = {
+            "file_size_bytes": self.db_path.stat().st_size if self.db_path.exists() else 0,
+            "file_size_mb": 0.0,
+            "tables": {},
+        }
+        stats["file_size_mb"] = stats["file_size_bytes"] / (1024 * 1024)
+
+        with self._get_connection() as conn:
+            for table in ["decisions", "signal_outcomes", "param_history", "intervention_analysis", "feature_importance"]:
+                try:
+                    cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                    stats["tables"][table] = cursor.fetchone()[0]
+                except sqlite3.OperationalError:
+                    stats["tables"][table] = 0
+
+        return stats
+
+    def close(self) -> None:
+        """
+        Close the memory module gracefully.
+        Ensures all pending transactions are committed.
+        """
+        # Run a final commit to ensure no pending changes
+        with self._get_connection() as conn:
+            conn.commit()
+        logger.info("Agent memory closed")

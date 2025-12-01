@@ -1,6 +1,8 @@
 """Feature registry for dynamic feature management."""
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -167,7 +169,10 @@ class FeatureRegistry:
             logger.error(f"Failed to load feature config: {e}")
 
     def save_config(self) -> None:
-        """Save current configuration to file."""
+        """
+        Save current configuration to file using atomic write.
+        Uses temp file + rename to prevent corruption from concurrent access.
+        """
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
         data = {
@@ -175,10 +180,30 @@ class FeatureRegistry:
             "saved_at": now_jst().isoformat(),
         }
 
-        with open(self.config_path, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # Write to temp file first, then rename (atomic on POSIX)
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                suffix=".json",
+                prefix="feature_registry_",
+                dir=self.config_path.parent
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
 
-        logger.debug(f"Feature config saved to {self.config_path}")
+                # Atomic rename
+                os.replace(tmp_path, self.config_path)
+                logger.debug(f"Feature config saved to {self.config_path}")
+
+            except Exception:
+                # Clean up temp file on error
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
+
+        except Exception as e:
+            logger.error(f"Failed to save feature config: {e}")
+            raise
 
     def get_enabled_features(self) -> list[str]:
         """Get list of enabled feature names."""

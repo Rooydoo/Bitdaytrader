@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import anthropic
@@ -14,6 +14,7 @@ from src.agent.decision import (
     ActionType,
     AutonomyLevel,
 )
+from src.utils.timezone import now_jst
 
 
 class ClaudeClient:
@@ -21,6 +22,10 @@ class ClaudeClient:
 
     DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
     MAX_TOKENS = 4096
+
+    # Rate limiting settings
+    MIN_CALL_INTERVAL = 30  # Minimum seconds between API calls
+    MAX_DAILY_CALLS = 100   # Maximum API calls per day
 
     def __init__(
         self,
@@ -36,7 +41,56 @@ class ClaudeClient:
         """
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model or self.DEFAULT_MODEL
+
+        # Rate limiting state
+        self._last_call_time: datetime | None = None
+        self._daily_call_count = 0
+        self._daily_reset_date = now_jst().date()
+
         logger.info(f"Claude client initialized with model: {self.model}")
+
+    def _check_rate_limit(self) -> tuple[bool, str]:
+        """
+        Check if API call is allowed under rate limits.
+
+        Returns:
+            Tuple of (allowed, reason)
+        """
+        now = now_jst()
+
+        # Reset daily counter if new day
+        if now.date() > self._daily_reset_date:
+            self._daily_call_count = 0
+            self._daily_reset_date = now.date()
+            logger.info("Daily API call counter reset")
+
+        # Check daily limit
+        if self._daily_call_count >= self.MAX_DAILY_CALLS:
+            return False, f"Daily limit reached ({self.MAX_DAILY_CALLS} calls)"
+
+        # Check minimum interval
+        if self._last_call_time:
+            elapsed = (now - self._last_call_time).total_seconds()
+            if elapsed < self.MIN_CALL_INTERVAL:
+                return False, f"Rate limit: wait {self.MIN_CALL_INTERVAL - elapsed:.0f}s"
+
+        return True, ""
+
+    def _record_api_call(self) -> None:
+        """Record an API call for rate limiting."""
+        self._last_call_time = now_jst()
+        self._daily_call_count += 1
+        logger.debug(f"API call #{self._daily_call_count} today")
+
+    def get_usage_stats(self) -> dict:
+        """Get current API usage statistics."""
+        return {
+            "daily_calls": self._daily_call_count,
+            "daily_limit": self.MAX_DAILY_CALLS,
+            "remaining_calls": self.MAX_DAILY_CALLS - self._daily_call_count,
+            "last_call": self._last_call_time.isoformat() if self._last_call_time else None,
+            "reset_date": self._daily_reset_date.isoformat(),
+        }
 
     async def analyze_and_decide(
         self,
@@ -55,12 +109,21 @@ class ClaudeClient:
         Returns:
             AgentDecision with analysis and actions
         """
+        # Check rate limit
+        allowed, reason = self._check_rate_limit()
+        if not allowed:
+            logger.warning(f"Claude API rate limited: {reason}")
+            return self._create_error_decision(f"Rate limited: {reason}")
+
         if system_prompt is None:
             system_prompt = self._get_default_system_prompt()
 
         user_prompt = self._build_user_prompt(context_prompt, memory_summary)
 
         try:
+            # Record API call for rate limiting
+            self._record_api_call()
+
             # Use synchronous API (will be called in thread pool from async context)
             response = self.client.messages.create(
                 model=self.model,
@@ -76,7 +139,8 @@ class ClaudeClient:
 
             logger.info(
                 f"Claude decision: {len(decision.actions)} actions, "
-                f"confidence={decision.confidence:.2f}"
+                f"confidence={decision.confidence:.2f}, "
+                f"daily_calls={self._daily_call_count}/{self.MAX_DAILY_CALLS}"
             )
 
             return decision

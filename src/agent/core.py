@@ -142,6 +142,15 @@ class MetaAgent:
             run_day=5,  # Saturday
         )
 
+        # Database maintenance on Sunday 03:00 JST (weekly, low traffic time)
+        self.scheduler.add_task(
+            name="database_maintenance",
+            task_func=self._task_database_maintenance,
+            frequency=TaskFrequency.WEEKLY,
+            run_time=time(3, 0),
+            run_day=6,  # Sunday
+        )
+
         logger.info("Scheduled tasks configured")
 
     async def run(self) -> None:
@@ -212,14 +221,28 @@ class MetaAgent:
             await self._cleanup()
 
     async def stop(self) -> None:
-        """Stop the agent."""
-        logger.info("Stopping Meta AI Agent")
+        """Stop the agent gracefully."""
+        logger.info("Stopping Meta AI Agent...")
         self._running = False
+        # Wait a moment for current iteration to finish
+        await asyncio.sleep(1)
+        await self._cleanup()
 
     async def _cleanup(self) -> None:
-        """Cleanup resources."""
+        """Cleanup resources and save state."""
+        logger.info("Cleaning up agent resources...")
+
+        # Close HTTP sessions
         await self.perception.close()
         await self.executor.close()
+
+        # Save feature registry state
+        self.feature_registry.save_config()
+        logger.info("Feature registry saved")
+
+        # Close memory database properly
+        self.memory.close()
+
         logger.info("Agent resources cleaned up")
 
     async def _decision_cycle(self, context: AgentContext) -> None:
@@ -946,6 +969,62 @@ class MetaAgent:
             logger.error(f"Feature optimization failed: {e}")
             await self.executor._send_telegram(
                 f"❌ 特徴量最適化でエラーが発生しました: {e}"
+            )
+
+    async def _task_database_maintenance(self) -> None:
+        """
+        Weekly database maintenance task.
+        Cleans up old records and optimizes database.
+        """
+        logger.info("Running database maintenance")
+
+        try:
+            # Get stats before cleanup
+            stats_before = self.memory.get_database_stats()
+
+            # Clean up old records (90 days retention)
+            deleted = self.memory.cleanup_old_records(retention_days=90)
+
+            # Vacuum to reclaim space
+            self.memory.vacuum()
+
+            # Get stats after cleanup
+            stats_after = self.memory.get_database_stats()
+
+            # Calculate savings
+            size_saved = stats_before["file_size_mb"] - stats_after["file_size_mb"]
+            total_deleted = sum(deleted.values())
+
+            # Send report
+            lines = [
+                "🗄️ データベースメンテナンス完了",
+                "",
+                f"削除レコード数: {total_deleted}件",
+            ]
+
+            if deleted:
+                for table, count in deleted.items():
+                    if count > 0:
+                        lines.append(f"  - {table}: {count}件")
+
+            lines.extend([
+                "",
+                f"DB サイズ: {stats_before['file_size_mb']:.2f}MB → {stats_after['file_size_mb']:.2f}MB",
+                f"解放容量: {size_saved:.2f}MB",
+                "",
+                "現在のレコード数:",
+            ])
+
+            for table, count in stats_after["tables"].items():
+                lines.append(f"  - {table}: {count}件")
+
+            await self.executor._send_telegram("\n".join(lines))
+            logger.info(f"Database maintenance completed: {total_deleted} records deleted")
+
+        except Exception as e:
+            logger.error(f"Database maintenance failed: {e}")
+            await self.executor._send_telegram(
+                f"❌ DBメンテナンスでエラー: {e}"
             )
 
     # ==================== Trigger Handling ====================
