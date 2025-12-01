@@ -381,6 +381,9 @@ class MetaAgent:
         # Get signal accuracy stats
         signal_stats = self.memory.get_signal_accuracy_stats(days=1)
 
+        # Run intervention analysis (missed opportunities, stop-loss timing, etc.)
+        intervention_results = await self._analyze_interventions(trades, signals)
+
         # Build data for Claude analysis
         signals_data = [s.to_dict() for s in signals]
         trades_data = [t.to_dict() for t in trades]
@@ -390,7 +393,7 @@ class MetaAgent:
         market = await self.perception.get_market_state()
         market_summary = f"BTC: ¥{market.current_price:,.0f}" if market else "市場データなし"
 
-        # Generate review with Claude
+        # Generate review with Claude (including intervention analysis)
         review_report = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: asyncio.run(
@@ -399,9 +402,17 @@ class MetaAgent:
                     trades_data=trades_data,
                     performance_data=performance_data,
                     market_summary=market_summary,
+                    intervention_summary=intervention_results.get("summary", ""),
                 )
             )
         )
+
+        # Build intervention stats text
+        intervention_text = ""
+        if intervention_results["analyses"]:
+            intervention_text = f"\n\n📊 介入分析: {len(intervention_results['analyses'])}件検出"
+            if intervention_results.get("obvious_count", 0) > 0:
+                intervention_text += f"\n  ⚠️ 明白な見逃し: {intervention_results['obvious_count']}件"
 
         # Send report
         await self.executor._send_telegram(
@@ -410,11 +421,307 @@ class MetaAgent:
             f"- 検証数: {signal_stats['evaluated']}\n"
             f"- 正解率: {signal_stats['accuracy']:.1%}\n"
             f"- LONG: {signal_stats['long_accuracy']:.1%}\n"
-            f"- SHORT: {signal_stats['short_accuracy']:.1%}\n\n"
-            f"{review_report[:3000]}"  # Telegram limit
+            f"- SHORT: {signal_stats['short_accuracy']:.1%}"
+            f"{intervention_text}\n\n"
+            f"{review_report[:2800]}"  # Telegram limit (adjusted for intervention text)
         )
 
         logger.info("Daily review completed")
+
+    async def _analyze_interventions(
+        self,
+        trades: list,
+        signals: list,
+    ) -> dict:
+        """
+        Analyze missed or delayed interventions.
+
+        Evaluates:
+        1. Stop-loss timing - Could we have exited earlier?
+        2. Missed opportunities - Large moves without positions
+        3. Threshold issues - Would lower thresholds have been profitable?
+
+        Returns a dict with analysis results.
+        """
+        from src.agent.memory import InterventionAnalysis
+
+        analyses = []
+        obvious_count = 0
+
+        # 1. Analyze stop-loss timing for losing trades
+        for trade in trades:
+            if not hasattr(trade, "pnl") or trade.pnl is None:
+                continue
+
+            # Only analyze closed losing trades
+            if trade.pnl < 0 and hasattr(trade, "exit_price"):
+                # Check if price moved significantly against position before SL hit
+                analysis = await self._analyze_stop_loss_timing(trade)
+                if analysis:
+                    analyses.append(analysis)
+                    self.memory.record_intervention_analysis(analysis)
+                    if analysis.hindsight_difficulty == "obvious":
+                        obvious_count += 1
+
+        # 2. Detect large price moves without positions (missed opportunities)
+        market_moves = await self._detect_significant_moves(hours=24)
+        for move in market_moves:
+            # Check if we had no position during this move
+            had_position = self._had_position_during(move, trades)
+            if not had_position and abs(move["change"]) >= 0.02:  # 2% move
+                analysis = self._create_missed_opportunity_analysis(move, signals)
+                if analysis:
+                    analyses.append(analysis)
+                    self.memory.record_intervention_analysis(analysis)
+                    if analysis.hindsight_difficulty == "obvious":
+                        obvious_count += 1
+
+        # Build summary for Claude
+        summary_parts = []
+        if analyses:
+            summary_parts.append(f"検出された介入分析: {len(analyses)}件")
+
+            by_type = {}
+            for a in analyses:
+                by_type[a.analysis_type] = by_type.get(a.analysis_type, 0) + 1
+
+            for t, count in by_type.items():
+                type_label = {
+                    "stop_loss_timing": "損切りタイミング",
+                    "missed_opportunity": "機会損失",
+                    "threshold_too_strict": "閾値問題",
+                }.get(t, t)
+                summary_parts.append(f"  - {type_label}: {count}件")
+
+            if obvious_count > 0:
+                summary_parts.append(f"\n※明白な見逃し: {obvious_count}件 (要改善)")
+
+        return {
+            "analyses": analyses,
+            "obvious_count": obvious_count,
+            "summary": "\n".join(summary_parts) if summary_parts else "特に問題なし",
+        }
+
+    async def _analyze_stop_loss_timing(self, trade) -> "InterventionAnalysis | None":
+        """Analyze if stop-loss could have been triggered earlier."""
+        from src.agent.memory import InterventionAnalysis
+
+        # Get price history during trade
+        try:
+            price_history = await self.perception.get_price_history(
+                symbol="BTC_JPY",
+                start_time=trade.entry_time,
+                end_time=trade.exit_time if hasattr(trade, "exit_time") else None,
+            )
+        except Exception:
+            return None
+
+        if not price_history:
+            return None
+
+        # Find if there was an earlier opportunity to exit with less loss
+        entry_price = trade.entry_price
+        exit_price = trade.exit_price if hasattr(trade, "exit_price") else entry_price
+        actual_loss = trade.pnl
+
+        # For LONG: find highest price after entry
+        # For SHORT: find lowest price after entry
+        best_exit_price = None
+        best_exit_time = None
+
+        for point in price_history:
+            price = point.get("close", point.get("price"))
+            if trade.side == "BUY":  # LONG
+                if best_exit_price is None or price > best_exit_price:
+                    best_exit_price = price
+                    best_exit_time = point.get("timestamp")
+            else:  # SHORT
+                if best_exit_price is None or price < best_exit_price:
+                    best_exit_price = price
+                    best_exit_time = point.get("timestamp")
+
+        if best_exit_price is None:
+            return None
+
+        # Calculate potential better outcome
+        if trade.side == "BUY":
+            potential_pnl = (best_exit_price - entry_price) * trade.size
+        else:
+            potential_pnl = (entry_price - best_exit_price) * trade.size
+
+        # Only report if significant improvement was possible
+        improvement = potential_pnl - actual_loss
+        if improvement < abs(actual_loss) * 0.3:  # Less than 30% improvement
+            return None
+
+        # Determine hindsight difficulty
+        # If the better exit was clearly signaled (e.g., RSI extreme), it's "obvious"
+        # Otherwise, it's "moderate" or "difficult"
+        hindsight_difficulty = "moderate"  # Default
+
+        # If price reversed sharply (>1% in 15 min), it was probably predictable
+        if abs(best_exit_price - exit_price) / exit_price > 0.01:
+            hindsight_difficulty = "obvious" if improvement > abs(actual_loss) else "moderate"
+
+        return InterventionAnalysis(
+            id=None,
+            timestamp=trade.exit_time if hasattr(trade, "exit_time") else now_jst(),
+            analysis_type="stop_loss_timing",
+            trade_id=trade.id if hasattr(trade, "id") else None,
+            price_at_event=exit_price,
+            optimal_action=f"¥{best_exit_price:,.0f}で決済",
+            actual_action=f"¥{exit_price:,.0f}で損切り",
+            potential_impact=improvement,
+            hindsight_difficulty=hindsight_difficulty,
+            contributing_factors=[
+                f"最良決済価格: ¥{best_exit_price:,.0f}",
+                f"実際の決済: ¥{exit_price:,.0f}",
+                f"改善可能額: ¥{improvement:,.0f}",
+            ],
+            recommendation="ATR倍率の見直しまたは時間ベースの損切りルール検討",
+            evaluated_by_llm=False,
+        )
+
+    async def _detect_significant_moves(self, hours: int = 24) -> list[dict]:
+        """Detect significant price movements in the past N hours."""
+        try:
+            # Get hourly price data
+            price_history = await self.perception.get_price_history(
+                symbol="BTC_JPY",
+                start_time=now_jst() - timedelta(hours=hours),
+                interval="1h",
+            )
+        except Exception:
+            return []
+
+        if not price_history or len(price_history) < 2:
+            return []
+
+        moves = []
+        for i in range(1, len(price_history)):
+            prev = price_history[i - 1]
+            curr = price_history[i]
+
+            prev_price = prev.get("close", prev.get("price", 0))
+            curr_price = curr.get("close", curr.get("price", 0))
+
+            if prev_price == 0:
+                continue
+
+            change = (curr_price - prev_price) / prev_price
+
+            if abs(change) >= 0.015:  # 1.5% or more
+                moves.append({
+                    "start_time": prev.get("timestamp"),
+                    "end_time": curr.get("timestamp"),
+                    "start_price": prev_price,
+                    "end_price": curr_price,
+                    "change": change,
+                    "direction": "up" if change > 0 else "down",
+                })
+
+        return moves
+
+    def _had_position_during(self, move: dict, trades: list) -> bool:
+        """Check if we had a position during a price move."""
+        move_start = move.get("start_time")
+        move_end = move.get("end_time")
+
+        if not move_start or not move_end:
+            return False
+
+        # Convert to datetime if string
+        if isinstance(move_start, str):
+            move_start = datetime.fromisoformat(move_start.replace("Z", "+00:00"))
+        if isinstance(move_end, str):
+            move_end = datetime.fromisoformat(move_end.replace("Z", "+00:00"))
+
+        for trade in trades:
+            trade_start = trade.entry_time if hasattr(trade, "entry_time") else None
+            trade_end = trade.exit_time if hasattr(trade, "exit_time") else now_jst()
+
+            if trade_start is None:
+                continue
+
+            # Check for overlap
+            if trade_start <= move_end and trade_end >= move_start:
+                return True
+
+        return False
+
+    def _create_missed_opportunity_analysis(
+        self,
+        move: dict,
+        signals: list,
+    ) -> "InterventionAnalysis | None":
+        """Create analysis for a missed trading opportunity."""
+        from src.agent.memory import InterventionAnalysis
+
+        change = move["change"]
+        direction = move["direction"]
+
+        # Check if there was a signal that could have caught this move
+        matching_signals = []
+        for signal in signals:
+            signal_time = signal.timestamp if hasattr(signal, "timestamp") else None
+            if signal_time is None:
+                continue
+
+            move_start = move.get("start_time")
+            if isinstance(move_start, str):
+                move_start = datetime.fromisoformat(move_start.replace("Z", "+00:00"))
+
+            # Signal within 2 hours before the move
+            if signal_time < move_start and (move_start - signal_time).total_seconds() < 7200:
+                signal_direction = signal.direction if hasattr(signal, "direction") else None
+                if signal_direction:
+                    expected = "LONG" if direction == "up" else "SHORT"
+                    if signal_direction == expected:
+                        matching_signals.append(signal)
+
+        # Determine hindsight difficulty
+        if matching_signals:
+            # We had a signal but didn't trade - check confidence
+            max_conf = max(s.confidence for s in matching_signals if hasattr(s, "confidence"))
+            if max_conf >= 0.6:
+                hindsight_difficulty = "obvious"  # High confidence signal, should have traded
+            else:
+                hindsight_difficulty = "moderate"  # Low confidence, understandable miss
+            contributing_factors = [
+                f"適切な方向のシグナルあり (信頼度: {max_conf:.1%})",
+                f"価格変動: {change:+.2%}",
+            ]
+            recommendation = "信頼度閾値を下げることを検討"
+        else:
+            # No signal at all
+            hindsight_difficulty = "difficult"  # No signal, hard to predict
+            contributing_factors = [
+                "シグナルなし",
+                f"価格変動: {change:+.2%}",
+            ]
+            recommendation = "特徴量の追加または見直しを検討"
+
+        # Calculate potential impact (rough estimate)
+        move_pct = abs(change)
+        # Assume 1% position size, so potential gain is move_pct * position
+        potential_impact = move["start_price"] * 0.01 * move_pct  # Rough estimate
+
+        return InterventionAnalysis(
+            id=None,
+            timestamp=datetime.fromisoformat(move["end_time"].replace("Z", "+00:00"))
+            if isinstance(move["end_time"], str)
+            else move["end_time"],
+            analysis_type="missed_opportunity",
+            trade_id=None,
+            price_at_event=move["end_price"],
+            optimal_action=f"{'LONG' if direction == 'up' else 'SHORT'}エントリー",
+            actual_action="ノーポジション",
+            potential_impact=potential_impact,
+            hindsight_difficulty=hindsight_difficulty,
+            contributing_factors=contributing_factors,
+            recommendation=recommendation,
+            evaluated_by_llm=False,
+        )
 
     async def _task_morning_prep(self) -> None:
         """Morning preparation and status check."""

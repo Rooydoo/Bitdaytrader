@@ -262,6 +262,7 @@ JSON形式で回答してください。"""
         trades_data: list[dict],
         performance_data: dict,
         market_summary: str,
+        intervention_summary: str = "",
     ) -> str:
         """
         Generate a daily review report.
@@ -271,11 +272,25 @@ JSON形式で回答してください。"""
             trades_data: Today's trades with analysis
             performance_data: Performance metrics
             market_summary: Market conditions summary
+            intervention_summary: Summary of missed interventions analysis
 
         Returns:
             Formatted review report in Japanese
         """
-        prompt = f"""本日の取引を分析し、日次レビューレポートを作成してください。
+        # Build intervention section if available
+        intervention_section = ""
+        if intervention_summary:
+            intervention_section = f"""
+## 介入分析（見逃し検出）
+{intervention_summary}
+
+※「事後判断の難易度」について：
+- 明白だった: その時点で予測可能だった問題。改善が必要
+- ある程度予測可能だった: シグナルはあったが閾値等で見送り
+- 予測困難だった: 事前に予測することが難しかった。参考情報として記録
+"""
+
+        prompt = f"""本日の取引を分析し、日次レビュー（反省会）レポートを作成してください。
 
 ## 本日のシグナル
 {json.dumps(signals_data, ensure_ascii=False, indent=2)}
@@ -288,17 +303,19 @@ JSON形式で回答してください。"""
 
 ## 市場状況
 {market_summary}
-
+{intervention_section}
 以下の形式でレポートを作成してください：
 
 1. **本日のサマリー**: 取引結果の概要
 2. **シグナル精度分析**: 予測の正解率と傾向
 3. **エントリー/エグジット評価**: タイミングの良し悪し
-4. **問題点**: 検出された問題
-5. **改善提案**: 具体的な改善案
-6. **明日への注意点**: 注意すべき市場状況やパターン
+4. **介入タイミング評価**: 見逃しや遅延介入の分析（該当する場合）
+5. **問題点**: 検出された問題
+6. **改善提案**: 具体的な改善案（優先度付き）
+7. **明日への注意点**: 注意すべき市場状況やパターン
 
-レポートは日本語で、Telegram送信用に整形してください（絵文字OK）。"""
+レポートは日本語で、Telegram送信用に整形してください（絵文字OK）。
+「予測困難だった」ものは参考情報として扱い、「明白だった」ものを重点的に改善提案してください。"""
 
         try:
             response = self.client.messages.create(

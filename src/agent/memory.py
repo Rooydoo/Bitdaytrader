@@ -61,6 +61,40 @@ class SignalOutcome:
 
 
 @dataclass
+class InterventionAnalysis:
+    """Record of a missed or delayed intervention analysis."""
+
+    id: int | None
+    timestamp: datetime
+    analysis_type: str  # "stop_loss_timing", "missed_opportunity", "threshold_too_strict"
+    trade_id: int | None  # Related trade if applicable
+    price_at_event: float
+    optimal_action: str  # What should have been done
+    actual_action: str  # What was actually done (or "none")
+    potential_impact: float  # Estimated PnL difference
+    hindsight_difficulty: str  # "obvious", "moderate", "difficult" - was it predictable?
+    contributing_factors: list[str]
+    recommendation: str
+    evaluated_by_llm: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "timestamp": self.timestamp.isoformat(),
+            "analysis_type": self.analysis_type,
+            "trade_id": self.trade_id,
+            "price_at_event": self.price_at_event,
+            "optimal_action": self.optimal_action,
+            "actual_action": self.actual_action,
+            "potential_impact": self.potential_impact,
+            "hindsight_difficulty": self.hindsight_difficulty,
+            "contributing_factors": self.contributing_factors,
+            "recommendation": self.recommendation,
+            "evaluated_by_llm": self.evaluated_by_llm,
+        }
+
+
+@dataclass
 class DecisionPattern:
     """A pattern identified from decision history."""
 
@@ -128,9 +162,26 @@ class AgentMemory:
         outcome_score REAL
     );
 
+    CREATE TABLE IF NOT EXISTS intervention_analysis (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        analysis_type TEXT NOT NULL,
+        trade_id INTEGER,
+        price_at_event REAL NOT NULL,
+        optimal_action TEXT NOT NULL,
+        actual_action TEXT NOT NULL,
+        potential_impact REAL NOT NULL,
+        hindsight_difficulty TEXT NOT NULL,
+        contributing_factors TEXT,
+        recommendation TEXT,
+        evaluated_by_llm INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
     CREATE INDEX IF NOT EXISTS idx_signal_outcomes_timestamp ON signal_outcomes(timestamp);
     CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id ON signal_outcomes(signal_id);
+    CREATE INDEX IF NOT EXISTS idx_intervention_timestamp ON intervention_analysis(timestamp);
     """
 
     def __init__(self, db_path: str = "data/agent_memory.db") -> None:
@@ -646,3 +697,155 @@ class AgentMemory:
             )
             result = cursor.fetchone()
             return result[0] if result else 0
+
+    # ==================== Intervention Analysis ====================
+
+    def record_intervention_analysis(self, analysis: InterventionAnalysis) -> int:
+        """
+        Record an intervention analysis.
+
+        Args:
+            analysis: The intervention analysis to record
+
+        Returns:
+            ID of the recorded analysis
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO intervention_analysis
+                (timestamp, analysis_type, trade_id, price_at_event,
+                 optimal_action, actual_action, potential_impact,
+                 hindsight_difficulty, contributing_factors, recommendation,
+                 evaluated_by_llm, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    analysis.timestamp.isoformat(),
+                    analysis.analysis_type,
+                    analysis.trade_id,
+                    analysis.price_at_event,
+                    analysis.optimal_action,
+                    analysis.actual_action,
+                    analysis.potential_impact,
+                    analysis.hindsight_difficulty,
+                    json.dumps(analysis.contributing_factors),
+                    analysis.recommendation,
+                    1 if analysis.evaluated_by_llm else 0,
+                    now_jst().isoformat(),
+                ),
+            )
+            return cursor.lastrowid
+
+    def get_intervention_analyses(self, days: int = 7) -> list[InterventionAnalysis]:
+        """Get intervention analyses from the past N days."""
+        cutoff = now_jst() - timedelta(days=days)
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT * FROM intervention_analysis
+                WHERE timestamp >= ?
+                ORDER BY timestamp DESC
+                """,
+                (cutoff.isoformat(),),
+            )
+
+            analyses = []
+            for row in cursor.fetchall():
+                analyses.append(
+                    InterventionAnalysis(
+                        id=row["id"],
+                        timestamp=datetime.fromisoformat(row["timestamp"]),
+                        analysis_type=row["analysis_type"],
+                        trade_id=row["trade_id"],
+                        price_at_event=row["price_at_event"],
+                        optimal_action=row["optimal_action"],
+                        actual_action=row["actual_action"],
+                        potential_impact=row["potential_impact"],
+                        hindsight_difficulty=row["hindsight_difficulty"],
+                        contributing_factors=json.loads(row["contributing_factors"] or "[]"),
+                        recommendation=row["recommendation"],
+                        evaluated_by_llm=bool(row["evaluated_by_llm"]),
+                    )
+                )
+            return analyses
+
+    def get_intervention_stats(self, days: int = 7) -> dict:
+        """Get statistics about intervention analyses."""
+        analyses = self.get_intervention_analyses(days=days)
+
+        if not analyses:
+            return {
+                "total": 0,
+                "by_type": {},
+                "by_difficulty": {},
+                "total_potential_impact": 0.0,
+                "obvious_misses": 0,
+                "recommendations": [],
+            }
+
+        by_type = {}
+        by_difficulty = {}
+        total_impact = 0.0
+        recommendations = []
+
+        for a in analyses:
+            by_type[a.analysis_type] = by_type.get(a.analysis_type, 0) + 1
+            by_difficulty[a.hindsight_difficulty] = by_difficulty.get(a.hindsight_difficulty, 0) + 1
+            total_impact += a.potential_impact
+
+            if a.recommendation and a.hindsight_difficulty in ("obvious", "moderate"):
+                recommendations.append(a.recommendation)
+
+        return {
+            "total": len(analyses),
+            "by_type": by_type,
+            "by_difficulty": by_difficulty,
+            "total_potential_impact": total_impact,
+            "obvious_misses": by_difficulty.get("obvious", 0),
+            "recommendations": recommendations[:5],  # Top 5 recommendations
+        }
+
+    def get_intervention_summary_for_prompt(self, days: int = 7) -> str:
+        """Get a summary of intervention analyses for Claude prompt."""
+        stats = self.get_intervention_stats(days=days)
+
+        if stats["total"] == 0:
+            return "介入分析の履歴はありません。"
+
+        lines = [
+            f"過去{days}日間の介入分析: {stats['total']}件",
+            "",
+            "タイプ別:",
+        ]
+
+        type_labels = {
+            "stop_loss_timing": "損切りタイミング",
+            "missed_opportunity": "機会損失",
+            "threshold_too_strict": "閾値設定",
+        }
+
+        for t, count in stats["by_type"].items():
+            label = type_labels.get(t, t)
+            lines.append(f"  - {label}: {count}件")
+
+        lines.append("")
+        lines.append("事後判断の難易度:")
+
+        difficulty_labels = {
+            "obvious": "明白だった",
+            "moderate": "ある程度予測可能だった",
+            "difficult": "予測困難だった",
+        }
+
+        for d, count in stats["by_difficulty"].items():
+            label = difficulty_labels.get(d, d)
+            lines.append(f"  - {label}: {count}件")
+
+        if stats["total_potential_impact"] != 0:
+            sign = "+" if stats["total_potential_impact"] > 0 else ""
+            lines.append(f"\n推定インパクト: {sign}¥{stats['total_potential_impact']:,.0f}")
+
+        return "\n".join(lines)
