@@ -1,0 +1,46 @@
+[Unit]
+Description=Bitdaytrader Meta AI Agent
+Documentation=https://github.com/Rooydoo/Bitdaytrader
+After=network.target bitdaytrader.service bitdaytrader-api.service
+Wants=bitdaytrader.service bitdaytrader-api.service
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/home/trader/Bitdaytrader
+
+# Use virtual environment Python
+ExecStart=/home/trader/Bitdaytrader/.venv/bin/python -m src.agent.main
+
+# Environment file with secrets
+EnvironmentFile=/home/trader/Bitdaytrader/.env
+
+# Restart configuration
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bitdaytrader-agent
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/home/trader/Bitdaytrader/data /home/trader/Bitdaytrader/logs
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=30%
+
+# Timeout settings
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

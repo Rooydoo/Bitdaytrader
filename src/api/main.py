@@ -1760,6 +1760,217 @@ async def get_backup_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================
+# Signal Endpoints (for Meta AI Agent)
+# ============================================
+
+class SignalRecord(BaseModel):
+    """Model for a signal record."""
+    id: int
+    timestamp: str
+    direction: str
+    confidence: float
+    price: float
+    features: dict | None
+    executed: bool
+    reason: str | None
+
+
+class SignalOutcomeRequest(BaseModel):
+    """Request model for recording signal outcome."""
+    signal_id: int
+    was_correct: bool
+    actual_move: float
+    analysis: str = ""
+
+
+@app.get("/api/signals")
+async def get_signals(
+    limit: int = 50,
+    hours: int | None = None,
+    direction: str | None = None,
+    executed_only: bool = False,
+):
+    """
+    Get signal history.
+
+    Args:
+        limit: Maximum number of signals to return
+        hours: Only return signals from the last N hours
+        direction: Filter by direction (LONG/SHORT)
+        executed_only: Only return executed signals
+    """
+    try:
+        from src.database.models import Signal, get_session
+        from sqlalchemy import desc
+
+        db = get_session()
+        query = db.query(Signal)
+
+        # Apply filters
+        if hours:
+            cutoff = datetime.now() - timedelta(hours=hours)
+            query = query.filter(Signal.timestamp >= cutoff)
+
+        if direction:
+            query = query.filter(Signal.direction == direction.upper())
+
+        if executed_only:
+            query = query.filter(Signal.executed == True)
+
+        # Order and limit
+        signals = query.order_by(desc(Signal.timestamp)).limit(limit).all()
+
+        result = []
+        for s in signals:
+            result.append({
+                "id": s.id,
+                "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+                "direction": s.direction,
+                "confidence": s.confidence,
+                "price": s.price,
+                "features": json.loads(s.features) if s.features else None,
+                "executed": s.executed,
+                "reason": s.reason,
+            })
+
+        db.close()
+        return {"signals": result, "total": len(result)}
+
+    except Exception as e:
+        logger.error(f"Failed to get signals: {e}")
+        return {"signals": [], "total": 0, "error": str(e)}
+
+
+@app.get("/api/signals/{signal_id}")
+async def get_signal(signal_id: int):
+    """Get a specific signal by ID."""
+    try:
+        from src.database.models import Signal, get_session
+
+        db = get_session()
+        signal = db.query(Signal).filter(Signal.id == signal_id).first()
+        db.close()
+
+        if not signal:
+            raise HTTPException(status_code=404, detail="Signal not found")
+
+        return {
+            "id": signal.id,
+            "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+            "direction": signal.direction,
+            "confidence": signal.confidence,
+            "price": signal.price,
+            "features": json.loads(signal.features) if signal.features else None,
+            "executed": signal.executed,
+            "reason": signal.reason,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get signal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/signals/stats")
+async def get_signal_stats(days: int = 7):
+    """
+    Get signal statistics for the specified period.
+
+    Args:
+        days: Number of days to analyze
+    """
+    try:
+        from src.database.models import Signal, get_session
+        from sqlalchemy import func
+
+        db = get_session()
+        cutoff = datetime.now() - timedelta(days=days)
+
+        # Total signals
+        total = db.query(func.count(Signal.id)).filter(Signal.timestamp >= cutoff).scalar()
+
+        # By direction
+        long_count = db.query(func.count(Signal.id)).filter(
+            Signal.timestamp >= cutoff,
+            Signal.direction == "LONG"
+        ).scalar()
+
+        short_count = db.query(func.count(Signal.id)).filter(
+            Signal.timestamp >= cutoff,
+            Signal.direction == "SHORT"
+        ).scalar()
+
+        # Executed
+        executed_count = db.query(func.count(Signal.id)).filter(
+            Signal.timestamp >= cutoff,
+            Signal.executed == True
+        ).scalar()
+
+        # Average confidence
+        avg_confidence = db.query(func.avg(Signal.confidence)).filter(
+            Signal.timestamp >= cutoff
+        ).scalar()
+
+        # Average confidence by direction
+        avg_long_confidence = db.query(func.avg(Signal.confidence)).filter(
+            Signal.timestamp >= cutoff,
+            Signal.direction == "LONG"
+        ).scalar()
+
+        avg_short_confidence = db.query(func.avg(Signal.confidence)).filter(
+            Signal.timestamp >= cutoff,
+            Signal.direction == "SHORT"
+        ).scalar()
+
+        db.close()
+
+        return {
+            "period_days": days,
+            "total_signals": total or 0,
+            "long_signals": long_count or 0,
+            "short_signals": short_count or 0,
+            "executed_signals": executed_count or 0,
+            "execution_rate": (executed_count / total) if total else 0,
+            "avg_confidence": avg_confidence or 0,
+            "avg_long_confidence": avg_long_confidence or 0,
+            "avg_short_confidence": avg_short_confidence or 0,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get signal stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# Agent Status Endpoints
+# ============================================
+
+@app.get("/api/agent/status")
+async def get_agent_status():
+    """
+    Get Meta AI Agent status.
+
+    Returns status of the agent if it's running alongside this API.
+    """
+    try:
+        # Try to read agent status from a status file or database
+        agent_status_path = Path("data/agent_status.json")
+        if agent_status_path.exists():
+            with open(agent_status_path) as f:
+                return json.load(f)
+
+        return {
+            "status": "unknown",
+            "message": "Agent status file not found. Agent may not be running.",
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get agent status: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # Run with: uvicorn src.api.main:app --host 0.0.0.0 --port 8088
 if __name__ == "__main__":
     import uvicorn
