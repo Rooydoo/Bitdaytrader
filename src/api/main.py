@@ -1593,6 +1593,7 @@ def _apply_setting_to_engine(key: str) -> None:
     settings = get_settings()
     rs = get_runtime_settings()
 
+    # Allocation settings
     if key in ["symbols_config", "total_capital_utilization", "long_allocation_ratio", "short_allocation_ratio"]:
         # Get effective values
         symbols_str = rs.get("symbols_config", settings.symbols_config)
@@ -1609,6 +1610,27 @@ def _apply_setting_to_engine(key: str) -> None:
             long_allocation_ratio=rs.get("long_allocation_ratio", settings.long_allocation_ratio),
             short_allocation_ratio=rs.get("short_allocation_ratio", settings.short_allocation_ratio),
         )
+
+    # Risk/threshold settings - apply to RiskManager
+    risk_settings = [
+        "long_confidence_threshold", "short_confidence_threshold",
+        "long_risk_per_trade", "short_risk_per_trade",
+        "long_max_position_size", "short_max_position_size",
+        "long_max_daily_trades", "short_max_daily_trades",
+        "max_daily_trades", "daily_loss_limit",
+    ]
+
+    if key in risk_settings:
+        # Build kwargs for update_runtime_settings
+        kwargs = {}
+        for setting in risk_settings:
+            override = rs.get(setting)
+            if override is not None:
+                kwargs[setting] = override
+
+        if kwargs:
+            _engine.risk_manager.update_runtime_settings(**kwargs)
+            logger.info(f"Applied runtime setting '{key}' to engine")
 
 
 # ============================================

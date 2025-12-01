@@ -22,6 +22,7 @@ from src.database.models import (
 from src.execution.order_manager import OrderManager, PositionStatus
 from src.execution.paper_executor import PaperTradingExecutor, PaperTradingConfig
 from src.features.calculator import FeatureCalculator
+from src.features.registry import FeatureRegistry
 from src.models.predictor import Predictor
 from src.reports.generator import ReportGenerator
 from src.risk.manager import RiskManager
@@ -54,8 +55,11 @@ class TradingEngine:
             private_url=settings.gmo_private_url,
         )
 
-        # Initialize components
-        self.feature_calc = FeatureCalculator()
+        # Initialize feature registry (shared with agent for dynamic feature management)
+        self.feature_registry = FeatureRegistry(config_path="data/feature_registry.json")
+
+        # Initialize components with feature registry
+        self.feature_calc = FeatureCalculator(registry=self.feature_registry)
         self.predictor = Predictor(settings.model_path)
         self.risk_manager = RiskManager(
             # LONG settings

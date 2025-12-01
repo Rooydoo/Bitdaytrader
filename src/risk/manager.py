@@ -943,3 +943,97 @@ Total PnL: ¥{stats['total']['pnl']:,.0f}
             )
 
         return RiskCheck(allowed=True)
+
+    def update_runtime_settings(
+        self,
+        long_confidence_threshold: float | None = None,
+        short_confidence_threshold: float | None = None,
+        long_risk_per_trade: float | None = None,
+        short_risk_per_trade: float | None = None,
+        long_max_position_size: float | None = None,
+        short_max_position_size: float | None = None,
+        long_max_daily_trades: int | None = None,
+        short_max_daily_trades: int | None = None,
+        max_daily_trades: int | None = None,
+        daily_loss_limit: float | None = None,
+    ) -> dict[str, str]:
+        """
+        Update risk parameters at runtime.
+
+        This method allows dynamic adjustment of risk parameters without restarting
+        the trading engine. Used by the API and Meta AI Agent.
+
+        Args:
+            long_confidence_threshold: Confidence threshold for LONG trades
+            short_confidence_threshold: Confidence threshold for SHORT trades
+            long_risk_per_trade: Risk per trade for LONG positions
+            short_risk_per_trade: Risk per trade for SHORT positions
+            long_max_position_size: Max position size for LONG
+            short_max_position_size: Max position size for SHORT
+            long_max_daily_trades: Max daily trades for LONG
+            short_max_daily_trades: Max daily trades for SHORT
+            max_daily_trades: Global max daily trades
+            daily_loss_limit: Daily loss limit
+
+        Returns:
+            Dict of parameter names and their update status
+        """
+        updates = {}
+
+        # LONG config updates
+        if long_confidence_threshold is not None:
+            old = self.long_config.confidence_threshold
+            self.long_config.confidence_threshold = long_confidence_threshold
+            updates["long_confidence_threshold"] = f"{old:.2%} → {long_confidence_threshold:.2%}"
+
+        if long_risk_per_trade is not None:
+            old = self.long_config.risk_per_trade
+            self.long_config.risk_per_trade = long_risk_per_trade
+            updates["long_risk_per_trade"] = f"{old:.2%} → {long_risk_per_trade:.2%}"
+
+        if long_max_position_size is not None:
+            old = self.long_config.max_position_size
+            self.long_config.max_position_size = long_max_position_size
+            updates["long_max_position_size"] = f"{old:.2%} → {long_max_position_size:.2%}"
+
+        if long_max_daily_trades is not None:
+            old = self.long_config.max_daily_trades
+            self.long_config.max_daily_trades = long_max_daily_trades
+            updates["long_max_daily_trades"] = f"{old} → {long_max_daily_trades}"
+
+        # SHORT config updates
+        if short_confidence_threshold is not None:
+            old = self.short_config.confidence_threshold
+            self.short_config.confidence_threshold = short_confidence_threshold
+            updates["short_confidence_threshold"] = f"{old:.2%} → {short_confidence_threshold:.2%}"
+
+        if short_risk_per_trade is not None:
+            old = self.short_config.risk_per_trade
+            self.short_config.risk_per_trade = short_risk_per_trade
+            updates["short_risk_per_trade"] = f"{old:.2%} → {short_risk_per_trade:.2%}"
+
+        if short_max_position_size is not None:
+            old = self.short_config.max_position_size
+            self.short_config.max_position_size = short_max_position_size
+            updates["short_max_position_size"] = f"{old:.2%} → {short_max_position_size:.2%}"
+
+        if short_max_daily_trades is not None:
+            old = self.short_config.max_daily_trades
+            self.short_config.max_daily_trades = short_max_daily_trades
+            updates["short_max_daily_trades"] = f"{old} → {short_max_daily_trades}"
+
+        # Global updates
+        if max_daily_trades is not None:
+            old = self.max_daily_trades
+            self.max_daily_trades = max_daily_trades
+            updates["max_daily_trades"] = f"{old} → {max_daily_trades}"
+
+        if daily_loss_limit is not None:
+            old = self.daily_loss_limit
+            self.daily_loss_limit = daily_loss_limit
+            updates["daily_loss_limit"] = f"{old:.2%} → {daily_loss_limit:.2%}"
+
+        if updates:
+            logger.info(f"Runtime settings updated: {updates}")
+
+        return updates
