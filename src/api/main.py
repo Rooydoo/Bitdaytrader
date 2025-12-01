@@ -1947,6 +1947,21 @@ async def get_signal_stats(days: int = 7):
 # Agent Status Endpoints
 # ============================================
 
+# Global reference to agent (set when running in same process)
+_agent: Any = None
+
+
+def set_agent(agent: Any) -> None:
+    """Set the Meta AI Agent reference."""
+    global _agent
+    _agent = agent
+
+
+def get_agent() -> Any:
+    """Get the Meta AI Agent reference."""
+    return _agent
+
+
 @app.get("/api/agent/status")
 async def get_agent_status():
     """
@@ -1955,6 +1970,10 @@ async def get_agent_status():
     Returns status of the agent if it's running alongside this API.
     """
     try:
+        # If agent is in same process
+        if _agent:
+            return _agent.get_status()
+
         # Try to read agent status from a status file or database
         agent_status_path = Path("data/agent_status.json")
         if agent_status_path.exists():
@@ -1969,6 +1988,161 @@ async def get_agent_status():
     except Exception as e:
         logger.error(f"Failed to get agent status: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/agent/trigger/daily-review")
+async def trigger_daily_review():
+    """
+    Manually trigger daily review (反省会).
+
+    Use this to run the daily review analysis immediately
+    instead of waiting for the scheduled time.
+    """
+    try:
+        # Method 1: Direct call if agent is in same process
+        if _agent:
+            await _agent.force_daily_review()
+            return {
+                "success": True,
+                "message": "Daily review triggered successfully",
+                "triggered_at": datetime.now().isoformat(),
+            }
+
+        # Method 2: Write trigger file for agent to pick up
+        trigger_path = Path("data/agent_triggers.json")
+        trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+        triggers = {}
+        if trigger_path.exists():
+            with open(trigger_path) as f:
+                triggers = json.load(f)
+
+        triggers["daily_review"] = {
+            "requested_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+
+        with open(trigger_path, "w") as f:
+            json.dump(triggers, f, indent=2)
+
+        return {
+            "success": True,
+            "message": "Daily review trigger queued. Agent will execute shortly.",
+            "triggered_at": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to trigger daily review: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agent/trigger/signal-verification")
+async def trigger_signal_verification():
+    """
+    Manually trigger signal verification.
+
+    Use this to verify recent signals immediately
+    instead of waiting for the scheduled interval.
+    """
+    try:
+        if _agent:
+            await _agent.force_signal_verification()
+            return {
+                "success": True,
+                "message": "Signal verification triggered successfully",
+                "triggered_at": datetime.now().isoformat(),
+            }
+
+        trigger_path = Path("data/agent_triggers.json")
+        trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+        triggers = {}
+        if trigger_path.exists():
+            with open(trigger_path) as f:
+                triggers = json.load(f)
+
+        triggers["signal_verification"] = {
+            "requested_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+
+        with open(trigger_path, "w") as f:
+            json.dump(triggers, f, indent=2)
+
+        return {
+            "success": True,
+            "message": "Signal verification trigger queued. Agent will execute shortly.",
+            "triggered_at": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to trigger signal verification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agent/trigger/emergency-analysis")
+async def trigger_emergency_analysis(context: str = ""):
+    """
+    Trigger emergency analysis by the agent.
+
+    Use this when you need the agent to immediately analyze
+    the current situation and make decisions.
+
+    Args:
+        context: Optional additional context for the analysis
+    """
+    try:
+        trigger_path = Path("data/agent_triggers.json")
+        trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+        triggers = {}
+        if trigger_path.exists():
+            with open(trigger_path) as f:
+                triggers = json.load(f)
+
+        triggers["emergency_analysis"] = {
+            "requested_at": datetime.now().isoformat(),
+            "status": "pending",
+            "context": context,
+            "priority": "high",
+        }
+
+        with open(trigger_path, "w") as f:
+            json.dump(triggers, f, indent=2)
+
+        # Also send Telegram notification about the request
+        await _send_emergency_alert(
+            f"🚨 緊急分析リクエスト\n"
+            f"時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"コンテキスト: {context or 'なし'}\n\n"
+            f"エージェントが分析を開始します。"
+        )
+
+        return {
+            "success": True,
+            "message": "Emergency analysis triggered. Agent will respond shortly.",
+            "triggered_at": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to trigger emergency analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/agent/triggers")
+async def get_pending_triggers():
+    """Get list of pending agent triggers."""
+    try:
+        trigger_path = Path("data/agent_triggers.json")
+        if not trigger_path.exists():
+            return {"triggers": {}}
+
+        with open(trigger_path) as f:
+            return {"triggers": json.load(f)}
+
+    except Exception as e:
+        logger.error(f"Failed to get triggers: {e}")
+        return {"triggers": {}, "error": str(e)}
 
 
 # Run with: uvicorn src.api.main:app --host 0.0.0.0 --port 8088
