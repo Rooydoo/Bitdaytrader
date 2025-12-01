@@ -1,7 +1,9 @@
 """Core Meta AI Agent implementation."""
 
 import asyncio
+import json
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -146,16 +148,22 @@ class MetaAgent:
         try:
             while self._running:
                 try:
+                    # 0. Check for manual triggers (from API/Telegram)
+                    await self._check_triggers()
+
                     # 1. Gather current context
                     context = await self.perception.get_context()
                     self._last_context = context
 
-                    # 2. Check if attention is needed
+                    # 2. Update status file for API/Telegram
+                    await self._update_status_file()
+
+                    # 3. Check if attention is needed
                     if context.needs_attention():
                         logger.info("Context requires attention, running decision cycle")
                         await self._decision_cycle(context)
 
-                    # 3. Run scheduled tasks
+                    # 4. Run scheduled tasks
                     await self.scheduler.check_and_run()
 
                     # Reset error counter on success
@@ -503,6 +511,172 @@ class MetaAgent:
         await self.executor._send_telegram("\n".join(lines))
         logger.info("Weekly summary sent")
 
+    # ==================== Trigger Handling ====================
+
+    async def _check_triggers(self) -> None:
+        """Check for and process manual triggers from API/Telegram."""
+        trigger_path = Path("data/agent_triggers.json")
+        if not trigger_path.exists():
+            return
+
+        try:
+            with open(trigger_path) as f:
+                triggers = json.load(f)
+
+            if not triggers:
+                return
+
+            # Process pending triggers
+            updated = False
+            for trigger_name, trigger_data in list(triggers.items()):
+                if trigger_data.get("status") != "pending":
+                    continue
+
+                logger.info(f"Processing trigger: {trigger_name}")
+                source = trigger_data.get("source", "api")
+
+                try:
+                    if trigger_name == "daily_review":
+                        await self._task_daily_review()
+                        triggers[trigger_name]["status"] = "completed"
+                        triggers[trigger_name]["completed_at"] = now_jst().isoformat()
+
+                    elif trigger_name == "signal_verification":
+                        await self._task_signal_verification()
+                        triggers[trigger_name]["status"] = "completed"
+                        triggers[trigger_name]["completed_at"] = now_jst().isoformat()
+
+                    elif trigger_name == "emergency_analysis":
+                        context = trigger_data.get("context", "")
+                        await self._emergency_analysis(context)
+                        triggers[trigger_name]["status"] = "completed"
+                        triggers[trigger_name]["completed_at"] = now_jst().isoformat()
+
+                    updated = True
+                    logger.info(f"Trigger {trigger_name} completed (source: {source})")
+
+                except Exception as e:
+                    logger.error(f"Error processing trigger {trigger_name}: {e}")
+                    triggers[trigger_name]["status"] = "failed"
+                    triggers[trigger_name]["error"] = str(e)
+                    updated = True
+
+            # Save updated triggers
+            if updated:
+                with open(trigger_path, "w") as f:
+                    json.dump(triggers, f, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error checking triggers: {e}")
+
+    async def _update_status_file(self) -> None:
+        """Update agent status file for API/Telegram to read."""
+        try:
+            status_path = Path("data/agent_status.json")
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Get recent actions from memory
+            recent_decisions = self.memory.get_decision_history_summary(limit=5)
+
+            status = {
+                "status": "running" if self._running else "stopped",
+                "last_check": now_jst().isoformat(),
+                "decisions_today": self._count_decisions_today(),
+                "consecutive_errors": self._consecutive_errors,
+                "recent_actions": self._format_recent_actions(recent_decisions),
+            }
+
+            with open(status_path, "w") as f:
+                json.dump(status, f, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error updating status file: {e}")
+
+    def _count_decisions_today(self) -> int:
+        """Count decisions made today."""
+        try:
+            # Simple count from memory
+            return self.memory.get_decision_count_today()
+        except Exception:
+            return 0
+
+    def _format_recent_actions(self, decisions: str) -> list[dict]:
+        """Format recent decisions as action list."""
+        # This is a simplified version - could parse the summary string
+        actions = []
+        if self._last_decision_time:
+            actions.append({
+                "type": "decision",
+                "summary": "最新の判断",
+                "time": self._last_decision_time.isoformat(),
+            })
+        return actions
+
+    async def _emergency_analysis(self, context: str = "") -> None:
+        """
+        Run emergency analysis.
+
+        This is triggered manually when immediate analysis is needed.
+        """
+        logger.warning(f"Running emergency analysis: {context}")
+
+        # Notify start
+        await self.executor._send_telegram(
+            f"🚨 <b>緊急分析開始</b>\n"
+            f"コンテキスト: {context or 'なし'}\n"
+            f"時刻: {now_jst().strftime('%H:%M:%S')}"
+        )
+
+        # Gather comprehensive context
+        full_context = await self.perception.get_context()
+
+        # Build emergency prompt
+        emergency_prompt = f"""
+緊急分析リクエスト
+
+ユーザーからのコンテキスト: {context or '指定なし'}
+
+現在の状況:
+{full_context.to_prompt()}
+
+この状況を即座に分析し、必要なアクションを決定してください。
+緊急度の高い問題があれば、適切な対応を提案してください。
+"""
+
+        # Get Claude's analysis
+        memory_summary = self.memory.get_decision_history_summary(limit=5)
+
+        decision = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: asyncio.run(
+                self.claude.analyze_and_decide(
+                    context_prompt=emergency_prompt,
+                    memory_summary=memory_summary,
+                )
+            )
+        )
+
+        # Build response
+        response_lines = [
+            f"🔍 <b>緊急分析完了</b>",
+            f"",
+            f"<b>分析結果:</b>",
+            f"{decision.reasoning[:1000]}",
+            f"",
+            f"<b>推奨アクション:</b> {len(decision.actions)}件",
+        ]
+
+        for action in decision.actions[:5]:
+            response_lines.append(f"• {action.type}: {action.description}")
+
+        if decision.actions:
+            # Execute high-priority actions
+            results = await self.executor.execute_actions(decision.actions)
+            response_lines.append(f"\n<b>実行結果:</b> {'成功' if results.overall_success else '一部失敗'}")
+
+        await self.executor._send_telegram("\n".join(response_lines))
+        logger.info("Emergency analysis completed")
+
     # ==================== Public Methods ====================
 
     async def force_daily_review(self) -> None:
@@ -512,6 +686,10 @@ class MetaAgent:
     async def force_signal_verification(self) -> None:
         """Manually trigger signal verification."""
         await self._task_signal_verification()
+
+    async def force_emergency_analysis(self, context: str = "") -> None:
+        """Manually trigger emergency analysis."""
+        await self._emergency_analysis(context)
 
     def get_status(self) -> dict:
         """Get agent status."""

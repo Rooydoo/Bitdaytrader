@@ -631,3 +631,18 @@ class AgentMemory:
                 lines.append(f"  - {rec}")
 
         return "\n".join(lines)
+
+    def get_decision_count_today(self) -> int:
+        """Get count of decisions made today."""
+        today_start = now_jst().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) FROM decisions
+                WHERE timestamp >= ?
+                """,
+                (today_start.isoformat(),),
+            )
+            result = cursor.fetchone()
+            return result[0] if result else 0
