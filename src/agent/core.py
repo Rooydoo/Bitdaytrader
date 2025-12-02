@@ -274,15 +274,10 @@ class MetaAgent:
         long_term_context = self.long_term_memory.get_context_for_prompt()
 
         # Ask Claude for decision
-        decision = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: asyncio.run(
-                self.claude.analyze_and_decide(
-                    context_prompt=context.to_prompt(),
-                    memory_summary=memory_summary,
-                    long_term_memory=long_term_context,
-                )
-            )
+        decision = await self.claude.analyze_and_decide(
+            context_prompt=context.to_prompt(),
+            memory_summary=memory_summary,
+            long_term_memory=long_term_context,
         )
 
         # Log decision
@@ -448,17 +443,12 @@ class MetaAgent:
         market_summary = f"BTC: ¥{market.current_price:,.0f}" if market else "市場データなし"
 
         # Generate review with Claude (including intervention analysis)
-        review_report = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: asyncio.run(
-                self.claude.generate_daily_review(
-                    signals_data=signals_data,
-                    trades_data=trades_data,
-                    performance_data=performance_data,
-                    market_summary=market_summary,
-                    intervention_summary=intervention_results.get("summary", ""),
-                )
-            )
+        review_report = await self.claude.generate_daily_review(
+            signals_data=signals_data,
+            trades_data=trades_data,
+            performance_data=performance_data,
+            market_summary=market_summary,
+            intervention_summary=intervention_results.get("summary", ""),
         )
 
         # Build intervention stats text
@@ -518,15 +508,10 @@ class MetaAgent:
 
         try:
             # Extract insights using Claude
-            extracted = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: asyncio.run(
-                    self.claude.extract_insights_from_review(
-                        daily_review=review_report,
-                        performance_data=performance_data,
-                        signal_accuracy=signal_stats,
-                    )
-                )
+            extracted = await self.claude.extract_insights_from_review(
+                daily_review=review_report,
+                performance_data=performance_data,
+                signal_accuracy=signal_stats,
             )
 
             insights_added = 0
@@ -1041,16 +1026,11 @@ class MetaAgent:
             model_performance = performance.to_dict() if performance else {}
 
             # Ask Claude for feature optimization analysis
-            optimization_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: asyncio.run(
-                    self.claude.analyze_feature_optimization(
-                        feature_registry_summary=feature_summary,
-                        model_performance=model_performance,
-                        signal_accuracy=signal_stats,
-                        recent_trades=trades_data,
-                    )
-                )
+            optimization_result = await self.claude.analyze_feature_optimization(
+                feature_registry_summary=feature_summary,
+                model_performance=model_performance,
+                signal_accuracy=signal_stats,
+                recent_trades=trades_data,
             )
 
             # Process recommendations
@@ -1240,14 +1220,9 @@ class MetaAgent:
             # 4. Validate with Claude (if there are items to validate)
             llm_validations = {}
             if items_to_validate:
-                llm_results = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: asyncio.run(
-                        self.claude.validate_memory_items(
-                            items_to_validate=items_to_validate[:10],  # Limit to 10
-                            recent_performance=recent_performance,
-                        )
-                    )
+                llm_results = await self.claude.validate_memory_items(
+                    items_to_validate=items_to_validate[:10],  # Limit to 10
+                    recent_performance=recent_performance,
                 )
 
                 # Process LLM validation results
@@ -1503,14 +1478,9 @@ class MetaAgent:
         # Get Claude's analysis
         memory_summary = self.memory.get_decision_history_summary(limit=5)
 
-        decision = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: asyncio.run(
-                self.claude.analyze_and_decide(
-                    context_prompt=emergency_prompt,
-                    memory_summary=memory_summary,
-                )
-            )
+        decision = await self.claude.analyze_and_decide(
+            context_prompt=emergency_prompt,
+            memory_summary=memory_summary,
         )
 
         # Build response

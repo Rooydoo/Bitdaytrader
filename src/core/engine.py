@@ -461,7 +461,16 @@ class TradingEngine:
 
         # Place order
         if self.settings.mode == "live":
-            ticker = self.client.get_ticker(self.settings.symbol)
+            try:
+                ticker = self.client.get_ticker(self.settings.symbol)
+                if ticker is None:
+                    logger.error("Failed to get ticker data - API returned None")
+                    await self.telegram.notify_error("Ticker API returned None", "execute_entry")
+                    return
+            except Exception as e:
+                logger.error(f"Failed to get ticker: {e}")
+                await self.telegram.notify_error(f"Ticker API error: {e}", "execute_entry")
+                return
 
             # For maker orders:
             # LONG: use bid (slightly below market to get filled as maker)
@@ -590,13 +599,21 @@ class TradingEngine:
                 self._record_trade_exit(position, position.realized_pnl, "TP")
                 self.risk_manager.add_trade_result(position.realized_pnl, position.side.value)
 
+                # Calculate PnL percent safely (avoid division by zero)
+                position_value = position.entry_price * position.size
+                pnl_percent = (
+                    position.realized_pnl / position_value
+                    if position_value > 0
+                    else 0.0
+                )
+
                 await self.telegram.notify_trade_closed(
                     symbol=self.settings.symbol,
                     side=position.side.value,
                     entry_price=position.entry_price,
                     exit_price=current_price,
                     pnl=position.realized_pnl,
-                    pnl_percent=position.realized_pnl / (position.entry_price * position.size),
+                    pnl_percent=pnl_percent,
                     reason="TP",
                 )
 
@@ -786,12 +803,16 @@ class TradingEngine:
         trades = self.trade_repo.get_open_trades()
         for trade in trades:
             if trade.symbol == position.symbol:
+                # Calculate PnL percent safely (avoid division by zero)
+                position_value = position.entry_price * position.size
+                pnl_percent = pnl / position_value if position_value > 0 else 0.0
+
                 self.trade_repo.update(
                     trade.id,
                     {
                         "exit_price": position.entry_price,  # Approximate
                         "pnl": pnl,
-                        "pnl_percent": pnl / (position.entry_price * position.size),
+                        "pnl_percent": pnl_percent,
                         "exit_time": now_jst(),
                         "status": status,
                     },
