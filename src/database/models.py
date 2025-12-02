@@ -147,22 +147,24 @@ _engine = None
 _SessionLocal = None
 
 
-def init_db(db_path: str = "data/trading.db") -> Session:
+def init_db(db_path: str = "data/trading.db", enable_wal: bool = True) -> Session:
     """
     Initialize database and return session.
 
     Args:
         db_path: Path to SQLite database file
+        enable_wal: Enable WAL mode for better concurrency and crash recovery
 
     Returns:
         SQLAlchemy Session
     """
     global _engine, _SessionLocal
+    from loguru import logger
 
     # Create directory if needed
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Create engine
+    # Create engine with optimized settings
     _engine = create_engine(
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
@@ -171,6 +173,23 @@ def init_db(db_path: str = "data/trading.db") -> Session:
 
     # Create tables
     Base.metadata.create_all(_engine)
+
+    # Enable WAL mode and other optimizations
+    if enable_wal:
+        try:
+            with _engine.connect() as conn:
+                # Enable WAL mode for better concurrency and crash recovery
+                conn.execute("PRAGMA journal_mode=WAL")
+                # NORMAL sync is a good balance of safety and speed
+                conn.execute("PRAGMA synchronous=NORMAL")
+                # Enable foreign key constraints
+                conn.execute("PRAGMA foreign_keys=ON")
+                # Increase cache size (negative = KB, so -64000 = 64MB)
+                conn.execute("PRAGMA cache_size=-64000")
+                conn.commit()
+            logger.info(f"Database initialized with WAL mode: {db_path}")
+        except Exception as e:
+            logger.warning(f"Failed to enable WAL mode: {e}")
 
     # Create session factory
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)

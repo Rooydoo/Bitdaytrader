@@ -4,8 +4,11 @@ import hashlib
 import hmac
 import random
 import time
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
 from functools import wraps
+from threading import Lock
 from typing import Any, Callable, TypeVar
 
 import httpx
@@ -23,6 +26,162 @@ RETRYABLE_GMO_ERROR_CODES = {
     4,  # Under maintenance
     5,  # Temporary unavailable
 }
+
+
+class ConnectionState(Enum):
+    """Connection state enumeration."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"  # Some failures but still working
+    UNHEALTHY = "unhealthy"  # Circuit breaker open
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class ConnectionHealth:
+    """Track connection health metrics."""
+
+    state: ConnectionState = ConnectionState.UNKNOWN
+    successful_calls: int = 0
+    failed_calls: int = 0
+    consecutive_failures: int = 0
+    last_success: datetime | None = None
+    last_failure: datetime | None = None
+    last_error: str | None = None
+    circuit_breaker_until: datetime | None = None
+
+    # Thresholds
+    failure_threshold: int = 5  # Consecutive failures to trip circuit breaker
+    recovery_time: timedelta = field(default_factory=lambda: timedelta(minutes=1))
+    degraded_threshold: float = 0.3  # Error rate to be considered degraded
+
+    def record_success(self) -> None:
+        """Record successful API call."""
+        self.successful_calls += 1
+        self.consecutive_failures = 0
+        self.last_success = datetime.utcnow()
+
+        # Update state
+        if self.state == ConnectionState.UNHEALTHY:
+            # Still in circuit breaker recovery
+            if self._is_circuit_breaker_active():
+                return
+            # Recovery successful
+            self.state = ConnectionState.HEALTHY
+            self.circuit_breaker_until = None
+            logger.info("Connection recovered to healthy state")
+        elif self._get_error_rate() > self.degraded_threshold:
+            self.state = ConnectionState.DEGRADED
+        else:
+            self.state = ConnectionState.HEALTHY
+
+    def record_failure(self, error: str) -> None:
+        """Record failed API call."""
+        self.failed_calls += 1
+        self.consecutive_failures += 1
+        self.last_failure = datetime.utcnow()
+        self.last_error = error
+
+        # Check if circuit breaker should trip
+        if self.consecutive_failures >= self.failure_threshold:
+            if self.state != ConnectionState.UNHEALTHY:
+                self.state = ConnectionState.UNHEALTHY
+                self.circuit_breaker_until = datetime.utcnow() + self.recovery_time
+                logger.warning(
+                    f"Circuit breaker tripped after {self.consecutive_failures} failures. "
+                    f"Recovery in {self.recovery_time.seconds}s"
+                )
+        elif self._get_error_rate() > self.degraded_threshold:
+            self.state = ConnectionState.DEGRADED
+
+    def _get_error_rate(self) -> float:
+        """Calculate current error rate."""
+        total = self.successful_calls + self.failed_calls
+        if total == 0:
+            return 0.0
+        return self.failed_calls / total
+
+    def _is_circuit_breaker_active(self) -> bool:
+        """Check if circuit breaker is currently active."""
+        if self.circuit_breaker_until is None:
+            return False
+        return datetime.utcnow() < self.circuit_breaker_until
+
+    def can_make_request(self) -> tuple[bool, str]:
+        """
+        Check if a request can be made.
+
+        Returns:
+            Tuple of (can_proceed, reason)
+        """
+        if self.state == ConnectionState.UNHEALTHY:
+            if self._is_circuit_breaker_active():
+                remaining = (self.circuit_breaker_until - datetime.utcnow()).seconds
+                return False, f"Circuit breaker active ({remaining}s remaining)"
+            # Circuit breaker timeout passed, allow half-open request
+            return True, "Circuit breaker half-open - testing connection"
+
+        return True, "Connection healthy"
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get connection statistics."""
+        return {
+            "state": self.state.value,
+            "successful_calls": self.successful_calls,
+            "failed_calls": self.failed_calls,
+            "error_rate": self._get_error_rate(),
+            "consecutive_failures": self.consecutive_failures,
+            "last_success": self.last_success.isoformat() if self.last_success else None,
+            "last_failure": self.last_failure.isoformat() if self.last_failure else None,
+            "last_error": self.last_error,
+            "circuit_breaker_active": self._is_circuit_breaker_active(),
+        }
+
+
+@dataclass
+class RateLimiter:
+    """Simple rate limiter for API calls."""
+
+    max_calls_per_second: float = 5.0
+    max_calls_per_minute: float = 100.0
+
+    _call_times: list = field(default_factory=list)
+    _lock: Lock = field(default_factory=Lock)
+
+    def acquire(self) -> float:
+        """
+        Acquire rate limit slot.
+
+        Returns:
+            Time to wait before making request (0 if can proceed immediately)
+        """
+        with self._lock:
+            now = time.time()
+
+            # Clean old entries
+            cutoff_second = now - 1.0
+            cutoff_minute = now - 60.0
+            self._call_times = [t for t in self._call_times if t > cutoff_minute]
+
+            # Count recent calls
+            calls_in_second = sum(1 for t in self._call_times if t > cutoff_second)
+            calls_in_minute = len(self._call_times)
+
+            # Check limits
+            if calls_in_second >= self.max_calls_per_second:
+                # Wait until next second
+                wait_time = 1.0 - (now - min(t for t in self._call_times if t > cutoff_second))
+                return max(0.1, wait_time)
+
+            if calls_in_minute >= self.max_calls_per_minute:
+                # Wait until oldest call expires
+                oldest = min(self._call_times)
+                wait_time = 60.0 - (now - oldest)
+                return max(0.1, wait_time)
+
+            # Record this call
+            self._call_times.append(now)
+            return 0.0
 
 
 class RetryConfig:
@@ -181,6 +340,8 @@ class GMOCoinClient:
         private_url: str = "https://api.coin.z.com/private",
         retry_config: RetryConfig | None = None,
         timeout: float = 30.0,
+        enable_rate_limiting: bool = True,
+        enable_circuit_breaker: bool = True,
     ) -> None:
         """
         Initialize GMO Coin client.
@@ -192,6 +353,8 @@ class GMOCoinClient:
             private_url: Private API base URL
             retry_config: Retry configuration (default: 3 retries with exponential backoff)
             timeout: Request timeout in seconds
+            enable_rate_limiting: Enable rate limiting
+            enable_circuit_breaker: Enable circuit breaker pattern
         """
         self.api_key = api_key
         self.api_secret = api_secret
@@ -199,6 +362,54 @@ class GMOCoinClient:
         self.private_url = private_url
         self.retry_config = retry_config or RetryConfig()
         self._client = httpx.Client(timeout=timeout)
+
+        # Connection health and rate limiting
+        self._enable_rate_limiting = enable_rate_limiting
+        self._enable_circuit_breaker = enable_circuit_breaker
+        self._connection_health = ConnectionHealth()
+        self._rate_limiter = RateLimiter() if enable_rate_limiting else None
+
+    def _check_connection_health(self) -> None:
+        """Check if connection is healthy enough to make a request."""
+        if not self._enable_circuit_breaker:
+            return
+
+        can_proceed, reason = self._connection_health.can_make_request()
+        if not can_proceed:
+            raise APIError(
+                message=f"Connection unhealthy: {reason}",
+                is_retryable=False,
+            )
+
+    def _apply_rate_limit(self) -> None:
+        """Apply rate limiting if enabled."""
+        if self._rate_limiter:
+            wait_time = self._rate_limiter.acquire()
+            if wait_time > 0:
+                logger.debug(f"Rate limit: waiting {wait_time:.2f}s")
+                time.sleep(wait_time)
+
+    def _record_success(self) -> None:
+        """Record successful API call."""
+        if self._enable_circuit_breaker:
+            self._connection_health.record_success()
+
+    def _record_failure(self, error: str) -> None:
+        """Record failed API call."""
+        if self._enable_circuit_breaker:
+            self._connection_health.record_failure(error)
+
+    def get_connection_health(self) -> dict[str, Any]:
+        """Get connection health statistics."""
+        return self._connection_health.get_stats()
+
+    def is_healthy(self) -> bool:
+        """Check if connection is healthy."""
+        return self._connection_health.state in (
+            ConnectionState.HEALTHY,
+            ConnectionState.DEGRADED,
+            ConnectionState.UNKNOWN,
+        )
 
     def _create_signature(self, timestamp: str, method: str, path: str, body: str = "") -> str:
         """Create HMAC-SHA256 signature for authentication."""
@@ -218,6 +429,12 @@ class GMOCoinClient:
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make authenticated request to private API."""
+        # Check connection health before making request
+        self._check_connection_health()
+
+        # Apply rate limiting
+        self._apply_rate_limit()
+
         timestamp = str(int(time.time() * 1000))
         body_str = "" if body is None else str(body).replace("'", '"').replace(" ", "")
 
@@ -250,21 +467,29 @@ class GMOCoinClient:
                 error_msg = messages[0] if messages else "Unknown error"
                 is_retryable = gmo_code in RETRYABLE_GMO_ERROR_CODES
 
+                self._record_failure(error_msg)
+
                 raise APIError(
                     message=f"GMO API Error: {error_msg}",
                     gmo_error_code=gmo_code,
                     is_retryable=is_retryable,
                 )
 
+            # Record success
+            self._record_success()
             return result
 
         except httpx.HTTPStatusError as e:
             is_retryable = e.response.status_code in RETRYABLE_STATUS_CODES
+            self._record_failure(f"HTTP {e.response.status_code}")
             raise APIError(
                 message=f"HTTP Error: {e.response.status_code}",
                 status_code=e.response.status_code,
                 is_retryable=is_retryable,
             ) from e
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            self._record_failure(str(e))
+            raise
 
     def _public_request(
         self,
@@ -272,6 +497,12 @@ class GMOCoinClient:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make request to public API."""
+        # Check connection health before making request
+        self._check_connection_health()
+
+        # Apply rate limiting
+        self._apply_rate_limit()
+
         url = f"{self.base_url}{path}"
 
         try:
@@ -286,21 +517,29 @@ class GMOCoinClient:
                 error_msg = messages[0] if messages else "Unknown error"
                 is_retryable = gmo_code in RETRYABLE_GMO_ERROR_CODES
 
+                self._record_failure(error_msg)
+
                 raise APIError(
                     message=f"GMO API Error: {error_msg}",
                     gmo_error_code=gmo_code,
                     is_retryable=is_retryable,
                 )
 
+            # Record success
+            self._record_success()
             return result
 
         except httpx.HTTPStatusError as e:
             is_retryable = e.response.status_code in RETRYABLE_STATUS_CODES
+            self._record_failure(f"HTTP {e.response.status_code}")
             raise APIError(
                 message=f"HTTP Error: {e.response.status_code}",
                 status_code=e.response.status_code,
                 is_retryable=is_retryable,
             ) from e
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            self._record_failure(str(e))
+            raise
 
     # Public API Methods
 
