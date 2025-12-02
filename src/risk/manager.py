@@ -2,9 +2,25 @@
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from src.agent.long_term_memory import LongTermMemory
+
+
+@dataclass
+class MemoryBasedAdjustment:
+    """Adjustment suggested by long-term memory rules."""
+
+    parameter: str
+    adjustment_type: str  # "multiply", "add", "set"
+    value: float
+    reason: str
+    rule_id: str | None = None
+    confidence: str = "medium"  # "high", "medium", "low"
 
 
 @dataclass
@@ -216,6 +232,234 @@ class RiskManager:
 
         # Position tracking per symbol
         self._symbol_positions: dict[str, dict[str, float]] = {}  # symbol -> {long: value, short: value}
+
+        # Long-term memory reference (optional)
+        self._long_term_memory: "LongTermMemory | None" = None
+        self._memory_adjustments_enabled: bool = True
+        self._last_memory_check: datetime | None = None
+        self._cached_adjustments: list[MemoryBasedAdjustment] = []
+
+    def set_long_term_memory(
+        self,
+        memory: "LongTermMemory",
+        enable_adjustments: bool = True,
+    ) -> None:
+        """
+        Set long-term memory reference for rule-based adjustments.
+
+        Args:
+            memory: LongTermMemory instance
+            enable_adjustments: Whether to apply memory-based adjustments
+        """
+        self._long_term_memory = memory
+        self._memory_adjustments_enabled = enable_adjustments
+        logger.info(
+            f"Long-term memory connected to RiskManager "
+            f"(adjustments: {'enabled' if enable_adjustments else 'disabled'})"
+        )
+
+    def enable_memory_adjustments(self, enabled: bool = True) -> None:
+        """Enable or disable memory-based adjustments."""
+        self._memory_adjustments_enabled = enabled
+        logger.info(f"Memory-based adjustments: {'enabled' if enabled else 'disabled'}")
+
+    def get_memory_adjustments(
+        self,
+        side: str,
+        market_conditions: dict | None = None,
+    ) -> list[MemoryBasedAdjustment]:
+        """
+        Get risk adjustments based on long-term memory rules.
+
+        Args:
+            side: "BUY" (LONG) or "SELL" (SHORT)
+            market_conditions: Current market conditions (volatility, trend, etc.)
+
+        Returns:
+            List of suggested adjustments
+        """
+        if not self._long_term_memory or not self._memory_adjustments_enabled:
+            return []
+
+        adjustments = []
+        direction = "LONG" if side == "BUY" else "SHORT"
+
+        # Get active rules from memory
+        rules = self._long_term_memory.get_active_rules()
+
+        for rule in rules:
+            # Skip low confidence rules
+            if rule.confidence.value == "low":
+                continue
+
+            # Parse rule content for risk-related keywords
+            content_lower = rule.content.lower()
+
+            # Check for position size adjustments
+            if "ポジション" in content_lower and ("縮小" in content_lower or "減らす" in content_lower):
+                if self._rule_applies_to_conditions(rule, market_conditions):
+                    adjustments.append(MemoryBasedAdjustment(
+                        parameter="position_size_multiplier",
+                        adjustment_type="multiply",
+                        value=0.7 if rule.confidence.value == "high" else 0.8,
+                        reason=rule.content[:100],
+                        rule_id=rule.id,
+                        confidence=rule.confidence.value,
+                    ))
+
+            # Check for confidence threshold adjustments
+            if "閾値" in content_lower and ("上げる" in content_lower or "厳しく" in content_lower):
+                if self._rule_applies_to_conditions(rule, market_conditions):
+                    adjustments.append(MemoryBasedAdjustment(
+                        parameter="confidence_threshold_add",
+                        adjustment_type="add",
+                        value=0.05 if rule.confidence.value == "high" else 0.03,
+                        reason=rule.content[:100],
+                        rule_id=rule.id,
+                        confidence=rule.confidence.value,
+                    ))
+
+            # Check for risk per trade adjustments
+            if "リスク" in content_lower and ("下げる" in content_lower or "減らす" in content_lower):
+                if self._rule_applies_to_conditions(rule, market_conditions):
+                    adjustments.append(MemoryBasedAdjustment(
+                        parameter="risk_per_trade_multiplier",
+                        adjustment_type="multiply",
+                        value=0.7 if rule.confidence.value == "high" else 0.85,
+                        reason=rule.content[:100],
+                        rule_id=rule.id,
+                        confidence=rule.confidence.value,
+                    ))
+
+            # Check for direction-specific rules
+            if direction.lower() in content_lower or direction in content_lower:
+                if "控える" in content_lower or "避ける" in content_lower or "停止" in content_lower:
+                    adjustments.append(MemoryBasedAdjustment(
+                        parameter=f"{direction.lower()}_should_skip",
+                        adjustment_type="set",
+                        value=1.0,
+                        reason=rule.content[:100],
+                        rule_id=rule.id,
+                        confidence=rule.confidence.value,
+                    ))
+
+        self._cached_adjustments = adjustments
+        self._last_memory_check = datetime.now()
+
+        if adjustments:
+            logger.info(
+                f"Memory-based adjustments for {direction}: {len(adjustments)} rules applied"
+            )
+
+        return adjustments
+
+    def _rule_applies_to_conditions(
+        self,
+        rule,
+        market_conditions: dict | None,
+    ) -> bool:
+        """Check if a rule applies to current market conditions."""
+        if not market_conditions:
+            return True  # Apply by default if no conditions provided
+
+        content_lower = rule.content.lower()
+
+        # Check volatility conditions
+        if "ボラティリティ" in content_lower or "変動" in content_lower:
+            volatility = market_conditions.get("volatility", "normal")
+            if "高" in content_lower and volatility != "high":
+                return False
+            if "低" in content_lower and volatility != "low":
+                return False
+
+        # Check trend conditions
+        if "トレンド" in content_lower:
+            trend = market_conditions.get("trend", "neutral")
+            if "上昇" in content_lower and trend != "up":
+                return False
+            if "下降" in content_lower and trend != "down":
+                return False
+
+        # Check consecutive losses condition
+        if "連続損失" in content_lower or "連敗" in content_lower:
+            consecutive_losses = self._drawdown.consecutive_losses
+            if consecutive_losses < 2:  # Only apply if actually in a losing streak
+                return False
+
+        return True
+
+    def apply_memory_adjustments(
+        self,
+        base_value: float,
+        parameter: str,
+        adjustments: list[MemoryBasedAdjustment],
+    ) -> tuple[float, list[str]]:
+        """
+        Apply memory-based adjustments to a parameter.
+
+        Args:
+            base_value: Original parameter value
+            parameter: Parameter name to adjust
+            adjustments: List of adjustments to consider
+
+        Returns:
+            Tuple of (adjusted_value, list of reasons)
+        """
+        adjusted = base_value
+        reasons = []
+
+        # Filter relevant adjustments
+        relevant = [a for a in adjustments if parameter in a.parameter]
+
+        for adj in relevant:
+            if adj.adjustment_type == "multiply":
+                adjusted *= adj.value
+                reasons.append(f"{adj.reason} (×{adj.value:.2f})")
+            elif adj.adjustment_type == "add":
+                adjusted += adj.value
+                reasons.append(f"{adj.reason} (+{adj.value:.2f})")
+            elif adj.adjustment_type == "set":
+                adjusted = adj.value
+                reasons.append(f"{adj.reason} (={adj.value})")
+
+        return adjusted, reasons
+
+    def should_skip_trade(
+        self,
+        side: str,
+        market_conditions: dict | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Check if trade should be skipped based on memory rules.
+
+        Args:
+            side: "BUY" (LONG) or "SELL" (SHORT)
+            market_conditions: Current market conditions
+
+        Returns:
+            Tuple of (should_skip, reason)
+        """
+        adjustments = self.get_memory_adjustments(side, market_conditions)
+        direction = "LONG" if side == "BUY" else "SHORT"
+
+        for adj in adjustments:
+            if adj.parameter == f"{direction.lower()}_should_skip" and adj.value > 0:
+                return True, adj.reason
+
+        return False, ""
+
+    def get_memory_status(self) -> dict:
+        """Get status of memory-based adjustments."""
+        return {
+            "memory_connected": self._long_term_memory is not None,
+            "adjustments_enabled": self._memory_adjustments_enabled,
+            "last_check": self._last_memory_check.isoformat() if self._last_memory_check else None,
+            "cached_adjustments": len(self._cached_adjustments),
+            "active_rules_count": (
+                len(self._long_term_memory.get_active_rules())
+                if self._long_term_memory else 0
+            ),
+        }
 
     def enable_conservative_mode(self, multiplier: float = 0.5) -> None:
         """

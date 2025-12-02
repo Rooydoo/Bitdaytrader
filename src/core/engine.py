@@ -10,6 +10,7 @@ from loguru import logger
 
 from config.settings import Settings
 from src.utils.timezone import now_jst, JST
+from src.agent.long_term_memory import LongTermMemory
 from src.api.gmo_client import GMOCoinClient
 from src.database.models import (
     DailyPnLRepository,
@@ -95,6 +96,16 @@ class TradingEngine:
             total_capital_utilization=settings.total_capital_utilization,
             long_allocation_ratio=settings.long_allocation_ratio,
             short_allocation_ratio=settings.short_allocation_ratio,
+        )
+
+        # Initialize long-term memory (shared with MetaAgent via same directory)
+        self.long_term_memory = LongTermMemory(memory_dir="data/memory")
+
+        # Connect long-term memory to RiskManager for rule-based adjustments
+        # This allows learned rules like "reduce position in high volatility" to be applied
+        self.risk_manager.set_long_term_memory(
+            self.long_term_memory,
+            enable_adjustments=getattr(settings, 'enable_memory_adjustments', True),
         )
 
         # Store symbols for multi-asset trading
