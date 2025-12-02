@@ -39,7 +39,7 @@ class ClaudeClient:
             api_key: Anthropic API key. If None, uses ANTHROPIC_API_KEY env var.
             model: Model to use. Defaults to Claude Sonnet 4.5.
         """
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.model = model or self.DEFAULT_MODEL
 
         # Rate limiting state
@@ -47,7 +47,7 @@ class ClaudeClient:
         self._daily_call_count = 0
         self._daily_reset_date = now_jst().date()
 
-        logger.info(f"Claude client initialized with model: {self.model}")
+        logger.info(f"Claude client initialized with model: {self.model} (async)")
 
     def _check_rate_limit(self) -> tuple[bool, str]:
         """
@@ -126,8 +126,8 @@ class ClaudeClient:
             # Record API call for rate limiting
             self._record_api_call()
 
-            # Use synchronous API (will be called in thread pool from async context)
-            response = self.client.messages.create(
+            # Use async API for non-blocking operation
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=self.MAX_TOKENS,
                 system=system_prompt,
@@ -445,7 +445,7 @@ JSON形式で回答してください。"""
 「予測困難だった」ものは参考情報として扱い、「明白だった」ものを重点的に改善提案してください。"""
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=self.MAX_TOKENS,
                 messages=[
@@ -526,7 +526,7 @@ JSON形式で回答してください。"""
 - パフォーマンスが安定している場合は変更を控える"""
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=2048,
                 messages=[
@@ -595,7 +595,7 @@ JSON形式で回答してください。"""
 ```"""
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=1024,
                 messages=[
@@ -708,7 +708,7 @@ JSON形式で回答してください。"""
 - 既存の知識と重複する可能性がある場合は抽出しないでください"""
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=2048,
                 messages=[
@@ -793,7 +793,7 @@ JSON形式で回答してください。"""
 - 修正で改善できる項目は modify を推奨してください"""
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=2048,
                 messages=[
