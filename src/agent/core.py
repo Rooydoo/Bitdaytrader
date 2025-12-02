@@ -468,6 +468,16 @@ class MetaAgent:
             if intervention_results.get("obvious_count", 0) > 0:
                 intervention_text += f"\n  ⚠️ 明白な見逃し: {intervention_results['obvious_count']}件"
 
+        # Build long-term memory stats text
+        ltm_stats = self.long_term_memory.get_stats()
+        ltm_text = f"\n\n🧠 長期記憶:\n"
+        ltm_text += f"- 有効な洞察: {ltm_stats['insights']['active']}件"
+        if ltm_stats['insights']['under_review'] > 0:
+            ltm_text += f" (レビュー中: {ltm_stats['insights']['under_review']}件)"
+        ltm_text += f"\n- 有効なルール: {ltm_stats['rules']['active']}件"
+        if ltm_stats['rules']['under_review'] > 0:
+            ltm_text += f" (レビュー中: {ltm_stats['rules']['under_review']}件)"
+
         # Send report
         await self.executor._send_telegram(
             f"📋 日次レビュー ({now_jst().strftime('%Y-%m-%d')})\n\n"
@@ -476,8 +486,9 @@ class MetaAgent:
             f"- 正解率: {signal_stats['accuracy']:.1%}\n"
             f"- LONG: {signal_stats['long_accuracy']:.1%}\n"
             f"- SHORT: {signal_stats['short_accuracy']:.1%}"
-            f"{intervention_text}\n\n"
-            f"{review_report[:2800]}"  # Telegram limit (adjusted for intervention text)
+            f"{intervention_text}"
+            f"{ltm_text}\n\n"
+            f"{review_report[:2600]}"  # Telegram limit (adjusted for additional text)
         )
 
         # Extract insights from review and save to long-term memory
@@ -973,6 +984,36 @@ class MetaAgent:
         if param_history:
             lines.append(f"\nパラメータ変更: {len(param_history)}件")
 
+        # Long-term memory statistics
+        ltm_stats = self.long_term_memory.get_stats()
+        lines.extend([
+            "\n=== 長期記憶 ===",
+            f"洞察: {ltm_stats['insights']['active']}件 (有効)",
+        ])
+        if ltm_stats['insights']['under_review'] > 0:
+            lines.append(f"  └ レビュー中: {ltm_stats['insights']['under_review']}件")
+        if ltm_stats['insights']['deprecated'] > 0:
+            lines.append(f"  └ 淘汰済み: {ltm_stats['insights']['deprecated']}件")
+
+        lines.append(f"ルール: {ltm_stats['rules']['active']}件 (有効)")
+        if ltm_stats['rules']['under_review'] > 0:
+            lines.append(f"  └ レビュー中: {ltm_stats['rules']['under_review']}件")
+        if ltm_stats['rules']['deprecated'] > 0:
+            lines.append(f"  └ 淘汰済み: {ltm_stats['rules']['deprecated']}件")
+
+        lines.append(f"イベント履歴: {ltm_stats['events']['total']}件")
+
+        # Show active high-confidence insights
+        high_conf_insights = [
+            i for i in self.long_term_memory.get_active_insights()
+            if i.confidence.value == "high"
+        ]
+        if high_conf_insights:
+            lines.append("\n📌 高信頼度の洞察:")
+            for insight in high_conf_insights[:3]:
+                lines.append(f"- [{insight.category}] {insight.title}")
+                lines.append(f"  (検証{insight.verification_count}回, 成功率{insight.success_rate:.0%})")
+
         if decision_patterns.get("recommendations"):
             lines.append("\n=== 改善提案 ===")
             for rec in decision_patterns["recommendations"][:3]:
@@ -1266,6 +1307,55 @@ class MetaAgent:
                 f"Memory validation completed: "
                 f"{stats['insights']['active']} insights, {stats['rules']['active']} rules active"
             )
+
+            # Save weekly reflection
+            now = now_jst()
+            week_start = now - timedelta(days=7)
+
+            # Build memory updates list
+            memory_updates = []
+            if validation_results["insights_reviewed"] > 0:
+                memory_updates.append(f"洞察{validation_results['insights_reviewed']}件をレビュー中に移行")
+            if validation_results["insights_deprecated"] > 0:
+                memory_updates.append(f"洞察{validation_results['insights_deprecated']}件を淘汰")
+            if validation_results["rules_reviewed"] > 0:
+                memory_updates.append(f"ルール{validation_results['rules_reviewed']}件をレビュー中に移行")
+            if validation_results["rules_deprecated"] > 0:
+                memory_updates.append(f"ルール{validation_results['rules_deprecated']}件を淘汰")
+            if deprecate_count > 0:
+                memory_updates.append(f"LLM検証で{deprecate_count}件に淘汰を推奨")
+
+            # Determine good things and improvements
+            good_things = []
+            improvements_needed = []
+
+            if signal_stats.get("accuracy", 0) >= 0.6:
+                good_things.append(f"シグナル精度が良好 ({signal_stats['accuracy']:.0%})")
+            else:
+                improvements_needed.append(f"シグナル精度の改善が必要 ({signal_stats['accuracy']:.0%})")
+
+            if stats['insights']['active'] > 0:
+                good_things.append(f"{stats['insights']['active']}件の有効な洞察を維持")
+            if stats['rules']['active'] > 0:
+                good_things.append(f"{stats['rules']['active']}件の有効なルールを維持")
+
+            if deprecate_count > 0:
+                improvements_needed.append("過学習の兆候あり、一部の記憶を淘汰")
+
+            self.long_term_memory.add_weekly_reflection(
+                start_date=week_start,
+                end_date=now,
+                performance_summary={
+                    "signal_accuracy": signal_stats.get("accuracy", 0),
+                    "intervention_success": intervention_stats.get("total", 0) > 0,
+                    "major_mistakes": intervention_stats.get("obvious_misses", 0),
+                },
+                good_things=good_things if good_things else ["特になし"],
+                improvements_needed=improvements_needed if improvements_needed else ["特になし"],
+                focus_points=["継続的な記憶の検証", "過学習の防止"],
+                memory_updates=memory_updates if memory_updates else ["変更なし"],
+            )
+            logger.info("Weekly reflection saved to long-term memory")
 
         except Exception as e:
             logger.error(f"Memory validation failed: {e}")
