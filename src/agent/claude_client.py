@@ -96,6 +96,7 @@ class ClaudeClient:
         self,
         context_prompt: str,
         memory_summary: str = "",
+        long_term_memory: str = "",
         system_prompt: str | None = None,
     ) -> AgentDecision:
         """
@@ -103,7 +104,8 @@ class ClaudeClient:
 
         Args:
             context_prompt: The current situation context
-            memory_summary: Summary of past decisions and outcomes
+            memory_summary: Summary of past decisions and outcomes (short-term)
+            long_term_memory: Summary of learned insights and rules (long-term)
             system_prompt: Optional custom system prompt
 
         Returns:
@@ -118,7 +120,7 @@ class ClaudeClient:
         if system_prompt is None:
             system_prompt = self._get_default_system_prompt()
 
-        user_prompt = self._build_user_prompt(context_prompt, memory_summary)
+        user_prompt = self._build_user_prompt(context_prompt, memory_summary, long_term_memory)
 
         try:
             # Record API call for rate limiting
@@ -252,20 +254,42 @@ class ClaudeClient:
 - 複数の問題がある場合は、優先度の高いものから対処する
 - 緊急事態では迷わず「emergency」を選択する"""
 
-    def _build_user_prompt(self, context_prompt: str, memory_summary: str) -> str:
-        """Build the user prompt with context and memory."""
+    def _build_user_prompt(
+        self,
+        context_prompt: str,
+        memory_summary: str,
+        long_term_memory: str = "",
+    ) -> str:
+        """Build the user prompt with context, short-term and long-term memory."""
         prompt = f"""## 現在の状況
 {context_prompt}
 """
 
+        # Long-term memory (learned insights and rules)
+        if long_term_memory:
+            prompt += f"""
+## 長期記憶（学習済みの知識）
+以下は過去の経験から学んだ洞察とルールです。これらを判断に活用してください。
+ただし、現在の状況に適用できるかを常に検討し、盲目的に従わないでください。
+
+{long_term_memory}
+"""
+
+        # Short-term memory (recent decisions)
         if memory_summary:
             prompt += f"""
-## 過去の判断と結果
+## 短期記憶（直近の判断履歴）
 {memory_summary}
 """
 
         prompt += """
 上記の状況を分析し、必要なアクションを判断してください。
+
+重要：
+- 長期記憶の洞察・ルールは参考にしつつ、現在の状況に適切かを判断してください
+- 過去の学習が現在の状況に当てはまらない場合は、それを指摘してください
+- 新たな洞察があれば、analysisに含めてください
+
 JSON形式で回答してください。"""
 
         return prompt
@@ -596,3 +620,196 @@ JSON形式で回答してください。"""
                 "feature_insights": [],
                 "suggestions": [],
             }
+
+    async def extract_insights_from_review(
+        self,
+        daily_review: str,
+        performance_data: dict,
+        signal_accuracy: dict,
+    ) -> dict:
+        """
+        Extract insights and rules from a daily review.
+
+        Args:
+            daily_review: The daily review text
+            performance_data: Performance metrics
+            signal_accuracy: Signal accuracy statistics
+
+        Returns:
+            Dict with extracted insights and rules
+        """
+        prompt = f"""以下の日次レビューから、長期的に記憶すべき洞察とルールを抽出してください。
+
+## 日次レビュー
+{daily_review}
+
+## パフォーマンスデータ
+{json.dumps(performance_data, ensure_ascii=False, indent=2)}
+
+## シグナル精度
+{json.dumps(signal_accuracy, ensure_ascii=False, indent=2)}
+
+以下の基準で抽出してください：
+
+### 洞察（Insights）
+- 繰り返し観察されるパターン
+- 特定の条件下で有効な知見
+- 市場の特性に関する発見
+
+### ルール（Rules）
+- 「〜のときは〜すべき」という行動指針
+- 「〜してはいけない」という禁止事項
+- 条件付きの判断基準
+
+### 抽出しない基準
+- 一度きりの偶然の出来事
+- 統計的に有意でない観察
+- 過去に既に記録済みの内容（重複）
+
+以下のJSON形式で回答してください：
+```json
+{{
+    "insights": [
+        {{
+            "category": "市場パターン|シグナル精度|リスク管理|特徴量",
+            "title": "短いタイトル",
+            "content": "洞察の内容",
+            "evidence": ["根拠1", "根拠2"],
+            "conditions": ["適用条件1"],
+            "confidence": "high|medium|low"
+        }}
+    ],
+    "rules": [
+        {{
+            "name": "ルール名",
+            "type": "do|dont|conditional",
+            "content": "ルールの内容",
+            "origin": "このルールが生まれた経緯",
+            "confidence": "high|medium|low"
+        }}
+    ],
+    "events": [
+        {{
+            "name": "イベント名",
+            "category": "market_crash|market_surge|system_error|strategy_change",
+            "severity": "critical|high|medium",
+            "impact": "影響の概要",
+            "situation": "何が起きたか",
+            "lessons": ["教訓1", "教訓2"]
+        }}
+    ],
+    "no_new_insights_reason": "新しい洞察がない場合の理由（オプション）"
+}}
+```
+
+注意：
+- 本当に価値のある洞察のみを抽出してください
+- 曖昧な内容や一般論は避けてください
+- 既存の知識と重複する可能性がある場合は抽出しないでください"""
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2048,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            raw = response.content[0].text
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw)
+            if json_match:
+                return json.loads(json_match.group(1))
+            else:
+                start = raw.find('{')
+                end = raw.rfind('}') + 1
+                return json.loads(raw[start:end])
+
+        except Exception as e:
+            logger.error(f"Failed to extract insights: {e}")
+            return {
+                "insights": [],
+                "rules": [],
+                "events": [],
+                "error": str(e),
+            }
+
+    async def validate_memory_items(
+        self,
+        items_to_validate: list[dict],
+        recent_performance: dict,
+    ) -> dict:
+        """
+        Validate existing memory items against recent data.
+
+        Args:
+            items_to_validate: List of insights/rules to validate
+            recent_performance: Recent performance data
+
+        Returns:
+            Dict with validation results for each item
+        """
+        if not items_to_validate:
+            return {"validations": []}
+
+        items_str = json.dumps(items_to_validate, ensure_ascii=False, indent=2)
+
+        prompt = f"""以下の学習済みの洞察・ルールを、最近のパフォーマンスデータに照らして検証してください。
+
+## 検証対象
+{items_str}
+
+## 最近のパフォーマンス（過去7日間）
+{json.dumps(recent_performance, ensure_ascii=False, indent=2)}
+
+各項目について以下を判定してください：
+
+1. **有効性**: この洞察/ルールは今も有効か？
+2. **適用可能性**: 最近のデータで適用する機会があったか？
+3. **成功**: 適用した場合、成功したか？
+
+以下のJSON形式で回答してください：
+```json
+{{
+    "validations": [
+        {{
+            "id": "項目のID",
+            "type": "insight|rule",
+            "still_valid": true/false,
+            "was_applicable": true/false,
+            "success": true/false/null,
+            "notes": "検証に関するメモ",
+            "recommendation": "keep|deprecate|modify",
+            "modification_suggestion": "修正が必要な場合の提案"
+        }}
+    ],
+    "overall_assessment": "全体的な評価コメント"
+}}
+```
+
+注意：
+- 検証できるデータがない場合は success を null にしてください
+- 明らかに時代遅れになった項目は deprecate を推奨してください
+- 修正で改善できる項目は modify を推奨してください"""
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2048,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            raw = response.content[0].text
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw)
+            if json_match:
+                return json.loads(json_match.group(1))
+            else:
+                start = raw.find('{')
+                end = raw.rfind('}') + 1
+                return json.loads(raw[start:end])
+
+        except Exception as e:
+            logger.error(f"Failed to validate memory items: {e}")
+            return {"validations": [], "error": str(e)}

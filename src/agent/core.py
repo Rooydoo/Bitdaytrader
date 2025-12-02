@@ -11,6 +11,7 @@ from loguru import logger
 from src.agent.action import ActionExecutor, ExecutionSummary
 from src.agent.claude_client import ClaudeClient
 from src.agent.decision import AgentAction, AgentDecision, ActionType, AutonomyLevel
+from src.agent.long_term_memory import LongTermMemory, ConfidenceLevel
 from src.agent.memory import AgentMemory, SignalOutcome
 from src.agent.perception import AgentContext, PerceptionModule
 from src.agent.schedule import Scheduler, TaskFrequency, DEFAULT_TASKS
@@ -38,6 +39,7 @@ class MetaAgent:
         telegram_chat_id: str | None = None,
         db_path: str = "data/agent_memory.db",
         feature_registry_path: str = "data/feature_registry.json",
+        long_term_memory_dir: str = "data/memory",
         check_interval: int = 60,  # seconds
     ) -> None:
         """
@@ -50,6 +52,7 @@ class MetaAgent:
             telegram_chat_id: Telegram chat ID
             db_path: Path to agent memory database
             feature_registry_path: Path to feature registry config
+            long_term_memory_dir: Path to long-term memory directory
             check_interval: Interval between state checks (seconds)
         """
         self.api_base_url = api_base_url
@@ -58,6 +61,7 @@ class MetaAgent:
         # Initialize components
         self.claude = ClaudeClient(api_key=anthropic_api_key)
         self.memory = AgentMemory(db_path=db_path)
+        self.long_term_memory = LongTermMemory(memory_dir=long_term_memory_dir)
         self.perception = PerceptionModule(api_base_url=api_base_url)
         self.feature_registry = FeatureRegistry(config_path=feature_registry_path)
         self.executor = ActionExecutor(
@@ -148,6 +152,15 @@ class MetaAgent:
             task_func=self._task_database_maintenance,
             frequency=TaskFrequency.WEEKLY,
             run_time=time(3, 0),
+            run_day=6,  # Sunday
+        )
+
+        # Memory validation on Sunday 04:00 JST (after DB maintenance)
+        self.scheduler.add_task(
+            name="memory_validation",
+            task_func=self._task_memory_validation,
+            frequency=TaskFrequency.WEEKLY,
+            run_time=time(4, 0),
             run_day=6,  # Sunday
         )
 
@@ -250,12 +263,15 @@ class MetaAgent:
         Run a full decision cycle.
 
         1. Build prompt from context
-        2. Ask Claude for decision
+        2. Ask Claude for decision (with short-term and long-term memory)
         3. Execute decided actions
         4. Record decision and results
         """
-        # Get memory summary for context
+        # Get short-term memory (recent decisions)
         memory_summary = self.memory.get_decision_history_summary(limit=10)
+
+        # Get long-term memory (learned insights and rules)
+        long_term_context = self.long_term_memory.get_context_for_prompt()
 
         # Ask Claude for decision
         decision = await asyncio.get_event_loop().run_in_executor(
@@ -264,6 +280,7 @@ class MetaAgent:
                 self.claude.analyze_and_decide(
                     context_prompt=context.to_prompt(),
                     memory_summary=memory_summary,
+                    long_term_memory=long_term_context,
                 )
             )
         )
@@ -463,7 +480,116 @@ class MetaAgent:
             f"{review_report[:2800]}"  # Telegram limit (adjusted for intervention text)
         )
 
+        # Extract insights from review and save to long-term memory
+        await self._extract_and_save_insights(
+            review_report=review_report,
+            performance_data=performance_data,
+            signal_stats=signal_stats,
+        )
+
         logger.info("Daily review completed")
+
+    async def _extract_and_save_insights(
+        self,
+        review_report: str,
+        performance_data: dict,
+        signal_stats: dict,
+    ) -> None:
+        """
+        Extract insights from daily review and save to long-term memory.
+
+        Args:
+            review_report: The daily review report text
+            performance_data: Performance metrics
+            signal_stats: Signal accuracy statistics
+        """
+        logger.info("Extracting insights from daily review")
+
+        try:
+            # Extract insights using Claude
+            extracted = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: asyncio.run(
+                    self.claude.extract_insights_from_review(
+                        daily_review=review_report,
+                        performance_data=performance_data,
+                        signal_accuracy=signal_stats,
+                    )
+                )
+            )
+
+            insights_added = 0
+            rules_added = 0
+            events_added = 0
+
+            # Save insights
+            for insight_data in extracted.get("insights", []):
+                try:
+                    confidence = ConfidenceLevel(insight_data.get("confidence", "low"))
+                    self.long_term_memory.add_insight(
+                        category=insight_data.get("category", "その他"),
+                        title=insight_data.get("title", ""),
+                        content=insight_data.get("content", ""),
+                        evidence=insight_data.get("evidence", []),
+                        conditions=insight_data.get("conditions", []),
+                        confidence=confidence,
+                    )
+                    insights_added += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save insight: {e}")
+
+            # Save rules
+            for rule_data in extracted.get("rules", []):
+                try:
+                    confidence = ConfidenceLevel(rule_data.get("confidence", "low"))
+                    self.long_term_memory.add_rule(
+                        name=rule_data.get("name", ""),
+                        rule_type=rule_data.get("type", "conditional"),
+                        content=rule_data.get("content", ""),
+                        origin=rule_data.get("origin", "日次レビューから抽出"),
+                        confidence=confidence,
+                    )
+                    rules_added += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save rule: {e}")
+
+            # Save events
+            for event_data in extracted.get("events", []):
+                try:
+                    self.long_term_memory.add_event(
+                        name=event_data.get("name", ""),
+                        category=event_data.get("category", "other"),
+                        severity=event_data.get("severity", "medium"),
+                        impact=event_data.get("impact", ""),
+                        situation=event_data.get("situation", ""),
+                        response="日次レビューで記録",
+                        result="",
+                        lessons=event_data.get("lessons", []),
+                    )
+                    events_added += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save event: {e}")
+
+            if insights_added or rules_added or events_added:
+                logger.info(
+                    f"Long-term memory updated: "
+                    f"{insights_added} insights, {rules_added} rules, {events_added} events"
+                )
+
+                # Notify about significant updates
+                if insights_added + rules_added >= 2:
+                    await self.executor._send_telegram(
+                        f"🧠 長期記憶を更新しました\n"
+                        f"- 新しい洞察: {insights_added}件\n"
+                        f"- 新しいルール: {rules_added}件\n"
+                        f"- 新しいイベント: {events_added}件"
+                    )
+            else:
+                reason = extracted.get("no_new_insights_reason", "特に新しい学習事項なし")
+                logger.info(f"No new insights extracted: {reason}")
+
+        except Exception as e:
+            logger.error(f"Failed to extract insights: {e}")
 
     async def _analyze_interventions(
         self,
@@ -1025,6 +1151,126 @@ class MetaAgent:
             logger.error(f"Database maintenance failed: {e}")
             await self.executor._send_telegram(
                 f"❌ DBメンテナンスでエラー: {e}"
+            )
+
+    async def _task_memory_validation(self) -> None:
+        """
+        Weekly long-term memory validation task.
+        Validates insights and rules against recent data.
+        Deprecates items that are no longer valid.
+        """
+        logger.info("Running long-term memory validation")
+
+        try:
+            # 1. Run automatic validation (age-based deprecation)
+            validation_results = self.long_term_memory.run_validation()
+
+            # 2. Get items needing LLM validation
+            items_to_validate = []
+            for insight in self.long_term_memory.get_active_insights():
+                items_to_validate.append({
+                    "type": "insight",
+                    "id": insight.id,
+                    "category": insight.category,
+                    "title": insight.title,
+                    "content": insight.content,
+                    "success_rate": f"{insight.success_rate:.0%}",
+                    "verification_count": insight.verification_count,
+                })
+            for rule in self.long_term_memory.get_active_rules():
+                items_to_validate.append({
+                    "type": "rule",
+                    "id": rule.id,
+                    "name": rule.name,
+                    "content": rule.content,
+                    "success_rate": f"{rule.success_rate:.0%}",
+                    "application_count": rule.application_count,
+                })
+
+            # 3. Get recent performance for context
+            signal_stats = self.memory.get_signal_accuracy_stats(days=7)
+            intervention_stats = self.memory.get_intervention_stats(days=7)
+
+            recent_performance = {
+                "signal_accuracy_7d": signal_stats,
+                "intervention_stats_7d": intervention_stats,
+            }
+
+            # 4. Validate with Claude (if there are items to validate)
+            llm_validations = {}
+            if items_to_validate:
+                llm_results = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: asyncio.run(
+                        self.claude.validate_memory_items(
+                            items_to_validate=items_to_validate[:10],  # Limit to 10
+                            recent_performance=recent_performance,
+                        )
+                    )
+                )
+
+                # Process LLM validation results
+                for validation in llm_results.get("validations", []):
+                    item_id = validation.get("id")
+                    item_type = validation.get("type")
+                    success = validation.get("success")
+                    recommendation = validation.get("recommendation")
+
+                    if item_type == "insight" and item_id:
+                        if success is not None:
+                            self.long_term_memory.verify_insight(
+                                item_id,
+                                success=success,
+                                notes=validation.get("notes", ""),
+                            )
+                        llm_validations[f"insight:{item_id}"] = recommendation
+                    elif item_type == "rule" and item_id:
+                        if success is not None:
+                            self.long_term_memory.apply_rule(
+                                item_id,
+                                success=success,
+                                context=validation.get("notes", ""),
+                            )
+                        llm_validations[f"rule:{item_id}"] = recommendation
+
+            # 5. Build and send report
+            stats = self.long_term_memory.get_stats()
+            deprecate_count = sum(
+                1 for rec in llm_validations.values()
+                if rec == "deprecate"
+            )
+
+            lines = [
+                "🧠 長期記憶の検証完了",
+                "",
+                "**記憶の状態:**",
+                f"- 洞察: {stats['insights']['active']}件 (レビュー中: {stats['insights']['under_review']}件)",
+                f"- ルール: {stats['rules']['active']}件 (レビュー中: {stats['rules']['under_review']}件)",
+                f"- イベント: {stats['events']['total']}件",
+            ]
+
+            if validation_results["items_needing_attention"]:
+                lines.append("")
+                lines.append("**要注意項目:**")
+                for item in validation_results["items_needing_attention"][:5]:
+                    item_name = item.get("title") or item.get("name", "不明")
+                    lines.append(f"- {item['type']}: {item_name} ({item['reason']})")
+
+            if deprecate_count > 0:
+                lines.append("")
+                lines.append(f"⚠️ 淘汰推奨: {deprecate_count}件")
+                lines.append("（過学習を防ぐため、有効性の低い項目を自動的に無効化しました）")
+
+            await self.executor._send_telegram("\n".join(lines))
+            logger.info(
+                f"Memory validation completed: "
+                f"{stats['insights']['active']} insights, {stats['rules']['active']} rules active"
+            )
+
+        except Exception as e:
+            logger.error(f"Memory validation failed: {e}")
+            await self.executor._send_telegram(
+                f"❌ 記憶検証でエラー: {e}"
             )
 
     # ==================== Trigger Handling ====================
