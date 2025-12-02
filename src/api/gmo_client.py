@@ -362,6 +362,51 @@ class GMOCoinClient:
         result = self._public_request("/v1/orderbooks", {"symbol": symbol})
         return result["data"]
 
+    def get_orderbook_features(self, symbol: str = "BTC_JPY") -> dict[str, float]:
+        """
+        Calculate features from orderbook data.
+
+        Returns:
+            Dict with orderbook-derived features:
+            - bid_ask_spread: Spread as percentage of mid price
+            - orderbook_imbalance: (bid_vol - ask_vol) / (bid_vol + ask_vol)
+            - bid_depth_5: Total bid volume in top 5 levels
+            - ask_depth_5: Total ask volume in top 5 levels
+        """
+        try:
+            data = self.get_orderbooks(symbol)
+            asks = data.get("asks", [])
+            bids = data.get("bids", [])
+
+            if not asks or not bids:
+                return {}
+
+            # Best bid/ask
+            best_bid = float(bids[0]["price"])
+            best_ask = float(asks[0]["price"])
+            mid_price = (best_bid + best_ask) / 2
+
+            # Spread
+            spread = (best_ask - best_bid) / mid_price
+
+            # Depth (top 5 levels)
+            bid_depth_5 = sum(float(b["size"]) for b in bids[:5])
+            ask_depth_5 = sum(float(a["size"]) for a in asks[:5])
+
+            # Imbalance
+            total_depth = bid_depth_5 + ask_depth_5
+            imbalance = (bid_depth_5 - ask_depth_5) / total_depth if total_depth > 0 else 0
+
+            return {
+                "bid_ask_spread": spread,
+                "orderbook_imbalance": imbalance,
+                "bid_depth_5": bid_depth_5,
+                "ask_depth_5": ask_depth_5,
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get orderbook features: {e}")
+            return {}
+
     # Private API Methods
 
     @with_retry

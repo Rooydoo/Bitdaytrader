@@ -20,6 +20,7 @@ class Predictor:
         """
         self.model: Any = None
         self.model_path = Path(model_path) if model_path else None
+        self.feature_names: list[str] = []  # Feature names model was trained with
 
         if self.model_path and self.model_path.exists():
             self.load(self.model_path)
@@ -36,9 +37,13 @@ class Predictor:
         # Handle both dict format (from trainer) and raw model format
         if isinstance(loaded, dict) and "model" in loaded:
             self.model = loaded["model"]
-            logger.info(f"Model loaded from {model_path} (dict format)")
+            self.feature_names = loaded.get("feature_names", [])
+            logger.info(
+                f"Model loaded from {model_path} (dict format, {len(self.feature_names)} features)"
+            )
         else:
             self.model = loaded
+            self.feature_names = []
             logger.info(f"Model loaded from {model_path}")
 
         self.model_path = model_path
@@ -123,10 +128,15 @@ class Predictor:
 
         # Clear current model
         self.model = None
+        self.feature_names = []
 
         # Load new model
         self.load(path)
         logger.info(f"Model reloaded from {path}")
+
+    def get_required_features(self) -> list[str]:
+        """Get the list of feature names this model expects."""
+        return self.feature_names.copy()
 
     @staticmethod
     def get_default_params() -> dict[str, Any]:

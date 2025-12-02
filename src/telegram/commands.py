@@ -1,5 +1,8 @@
 """Telegram command handlers for bot configuration."""
 
+import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -74,6 +77,13 @@ class TelegramCommandHandler:
 <b>レポート:</b>
 /report - 本日のレポート
 /weekly - 週次レポート
+
+<b>AIエージェント:</b>
+/agent - エージェント状態
+/review - 日次反省会を実行
+/verify - シグナル検証を実行
+/analyze [理由] - 緊急分析を実行
+/features - 特徴量最適化を実行
 """
         await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -454,6 +464,206 @@ class TelegramCommandHandler:
             logger.error(f"Error resuming SHORT: {e}")
             await update.message.reply_text(f"エラー: {e}")
 
+    # ============================================
+    # AI Agent Commands
+    # ============================================
+
+    async def agent_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /agent command - show agent status."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            # Try to read agent status
+            agent_status_path = Path("data/agent_status.json")
+            if agent_status_path.exists():
+                with open(agent_status_path) as f:
+                    status = json.load(f)
+
+                text = f"""
+🤖 <b>AIエージェント状態</b>
+
+📊 ステータス: {status.get('status', 'unknown')}
+⏰ 最終チェック: {status.get('last_check', 'N/A')}
+📈 本日の判断: {status.get('decisions_today', 0)}回
+
+📋 <b>最近の行動:</b>
+"""
+                recent_actions = status.get('recent_actions', [])[:3]
+                if recent_actions:
+                    for action in recent_actions:
+                        text += f"• {action.get('type', 'unknown')}: {action.get('summary', 'N/A')}\n"
+                else:
+                    text += "なし\n"
+
+                # Check pending triggers
+                trigger_path = Path("data/agent_triggers.json")
+                if trigger_path.exists():
+                    with open(trigger_path) as f:
+                        triggers = json.load(f)
+                    pending = [k for k, v in triggers.items() if v.get('status') == 'pending']
+                    if pending:
+                        text += f"\n⏳ <b>保留中のトリガー:</b> {', '.join(pending)}"
+
+                await update.message.reply_text(text.strip(), parse_mode="HTML")
+            else:
+                await update.message.reply_text(
+                    "🤖 エージェントの状態情報がありません。\n"
+                    "エージェントが起動していない可能性があります。"
+                )
+
+        except Exception as e:
+            logger.error(f"Error getting agent status: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def trigger_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /review command - trigger daily review."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            trigger_path = Path("data/agent_triggers.json")
+            trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+            triggers = {}
+            if trigger_path.exists():
+                with open(trigger_path) as f:
+                    triggers = json.load(f)
+
+            triggers["daily_review"] = {
+                "requested_at": datetime.now().isoformat(),
+                "status": "pending",
+                "source": "telegram",
+            }
+
+            with open(trigger_path, "w") as f:
+                json.dump(triggers, f, indent=2)
+
+            await update.message.reply_text(
+                "📊 <b>日次反省会をトリガーしました</b>\n\n"
+                "エージェントが分析を開始します。\n"
+                "完了後、結果が通知されます。",
+                parse_mode="HTML"
+            )
+            logger.info("Daily review triggered via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error triggering review: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def trigger_verify(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /verify command - trigger signal verification."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            trigger_path = Path("data/agent_triggers.json")
+            trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+            triggers = {}
+            if trigger_path.exists():
+                with open(trigger_path) as f:
+                    triggers = json.load(f)
+
+            triggers["signal_verification"] = {
+                "requested_at": datetime.now().isoformat(),
+                "status": "pending",
+                "source": "telegram",
+            }
+
+            with open(trigger_path, "w") as f:
+                json.dump(triggers, f, indent=2)
+
+            await update.message.reply_text(
+                "🔍 <b>シグナル検証をトリガーしました</b>\n\n"
+                "最近のシグナルと実際の結果を検証します。\n"
+                "完了後、結果が通知されます。",
+                parse_mode="HTML"
+            )
+            logger.info("Signal verification triggered via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error triggering verification: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def trigger_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /analyze command - trigger emergency analysis."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            # Get optional context from command arguments
+            context_text = " ".join(context.args) if context.args else ""
+
+            trigger_path = Path("data/agent_triggers.json")
+            trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+            triggers = {}
+            if trigger_path.exists():
+                with open(trigger_path) as f:
+                    triggers = json.load(f)
+
+            triggers["emergency_analysis"] = {
+                "requested_at": datetime.now().isoformat(),
+                "status": "pending",
+                "source": "telegram",
+                "context": context_text,
+                "priority": "high",
+            }
+
+            with open(trigger_path, "w") as f:
+                json.dump(triggers, f, indent=2)
+
+            context_msg = f"\nコンテキスト: {context_text}" if context_text else ""
+
+            await update.message.reply_text(
+                f"🚨 <b>緊急分析をトリガーしました</b>{context_msg}\n\n"
+                "エージェントが即座に状況を分析し、\n"
+                "必要に応じて対応を実行します。",
+                parse_mode="HTML"
+            )
+            logger.warning(f"Emergency analysis triggered via Telegram: {context_text}")
+
+        except Exception as e:
+            logger.error(f"Error triggering analysis: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
+    async def trigger_features(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /features command - trigger feature optimization."""
+        if not self._check_authorized(update):
+            return
+
+        try:
+            trigger_path = Path("data/agent_triggers.json")
+            trigger_path.parent.mkdir(parents=True, exist_ok=True)
+
+            triggers = {}
+            if trigger_path.exists():
+                with open(trigger_path) as f:
+                    triggers = json.load(f)
+
+            triggers["feature_optimization"] = {
+                "requested_at": datetime.now().isoformat(),
+                "status": "pending",
+                "source": "telegram",
+            }
+
+            with open(trigger_path, "w") as f:
+                json.dump(triggers, f, indent=2)
+
+            await update.message.reply_text(
+                "🔧 <b>特徴量最適化をトリガーしました</b>\n\n"
+                "エージェントが特徴量のパフォーマンスを分析し、\n"
+                "改善提案を行います。\n"
+                "完了後、結果が通知されます。",
+                parse_mode="HTML"
+            )
+            logger.info("Feature optimization triggered via Telegram")
+
+        except Exception as e:
+            logger.error(f"Error triggering feature optimization: {e}")
+            await update.message.reply_text(f"エラー: {e}")
+
     def _check_authorized(self, update: Update) -> bool:
         """Check if the message is from authorized chat."""
         if str(update.effective_chat.id) != self.chat_id:
@@ -519,6 +729,12 @@ class TelegramCommandHandler:
         app.add_handler(CommandHandler("stopshort", self.stopshort))
         app.add_handler(CommandHandler("resumelong", self.resumelong))
         app.add_handler(CommandHandler("resumeshort", self.resumeshort))
+        # AI Agent commands
+        app.add_handler(CommandHandler("agent", self.agent_status))
+        app.add_handler(CommandHandler("review", self.trigger_review))
+        app.add_handler(CommandHandler("verify", self.trigger_verify))
+        app.add_handler(CommandHandler("analyze", self.trigger_analyze))
+        app.add_handler(CommandHandler("features", self.trigger_features))
 
         return app
 
