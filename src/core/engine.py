@@ -342,6 +342,15 @@ class TradingEngine:
             logger.info(confidence_check.reason)
             return
 
+        # Check if long-term memory rules suggest skipping this trade
+        should_skip, skip_reason = self.risk_manager.should_skip_trade(
+            side=side,
+            market_conditions=self._get_market_conditions(df),
+        )
+        if should_skip:
+            logger.info(f"{direction} trade skipped by memory rule: {skip_reason}")
+            return
+
         logger.info(f"Signal: {direction} with confidence {confidence:.4f}")
 
         # Calculate dynamic leverage based on prediction confidence and market conditions

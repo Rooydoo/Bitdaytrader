@@ -60,7 +60,7 @@ class LeverageCalculation:
     confidence_factor: float
     volatility_factor: float
     memory_factor: float
-    streak_factor: float
+    conservative_factor: float
     reasons: list[str]
 
     @property
@@ -570,7 +570,7 @@ class RiskManager:
                 confidence_factor=1.0,
                 volatility_factor=1.0,
                 memory_factor=1.0,
-                streak_factor=1.0,
+                conservative_factor=1.0,
                 reasons=["Dynamic leverage disabled"],
             )
 
@@ -597,12 +597,15 @@ class RiskManager:
         if memory_factor != 1.0:
             reasons.append(f"Memory rules → factor {memory_factor:.2f}")
 
-        # 5. Losing streak factor (use existing method)
-        streak_factor = self.get_losing_streak_multiplier()
-        if streak_factor != 1.0:
-            reasons.append(
-                f"Losing streak ({self._drawdown.consecutive_losses} losses) → factor {streak_factor:.2f}"
-            )
+        # 5. Conservative mode factor
+        conservative_factor = 1.0
+        if self._conservative_mode:
+            conservative_factor = self._conservative_multiplier
+            reasons.append(f"Conservative mode → factor {conservative_factor:.2f}")
+
+        # NOTE: Losing streak factor is NOT applied here to avoid double-application.
+        # It is already applied in calculate_position_size() via get_losing_streak_multiplier().
+        # Applying it here would cause excessive risk reduction during losing streaks.
 
         # Apply all factors
         adjusted_leverage = (
@@ -610,7 +613,7 @@ class RiskManager:
             * confidence_factor
             * volatility_factor
             * memory_factor
-            * streak_factor
+            * conservative_factor
         )
 
         # Clamp to configured range
@@ -621,7 +624,7 @@ class RiskManager:
             logger.info(
                 f"Dynamic leverage: {leverage:.1f}x → {adjusted_leverage:.1f}x "
                 f"(conf={confidence_factor:.2f}, vol={volatility_factor:.2f}, "
-                f"mem={memory_factor:.2f}, streak={streak_factor:.2f})"
+                f"mem={memory_factor:.2f}, cons={conservative_factor:.2f})"
             )
 
         return LeverageCalculation(
@@ -630,7 +633,7 @@ class RiskManager:
             confidence_factor=confidence_factor,
             volatility_factor=volatility_factor,
             memory_factor=memory_factor,
-            streak_factor=streak_factor,
+            conservative_factor=conservative_factor,
             reasons=reasons,
         )
 
