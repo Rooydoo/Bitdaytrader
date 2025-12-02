@@ -772,12 +772,23 @@ class TradingEngine:
         """Record signal to database."""
         import json
 
+        # Serialize features safely (handles NumPy arrays and other types)
+        features_json = None
+        if features is not None:
+            try:
+                if hasattr(features, 'tolist'):
+                    features_json = json.dumps(features.tolist())
+                else:
+                    features_json = json.dumps(features)
+            except (TypeError, AttributeError) as e:
+                logger.warning(f"Failed to serialize features: {e}")
+
         signal = Signal(
             symbol=self.settings.symbol,
             direction=direction,
             confidence=confidence,
             price=price,
-            features=json.dumps(features.tolist()) if features is not None else None,
+            features=features_json,
         )
         self.session.add(signal)
         self.session.commit()

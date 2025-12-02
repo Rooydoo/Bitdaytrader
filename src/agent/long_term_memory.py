@@ -379,7 +379,10 @@ class LongTermMemory:
             for insight in sorted(insights, key=lambda x: x.created_at, reverse=True):
                 content += insight.to_markdown() + "\n---\n\n"
 
-        self.insights_file.write_text(content, encoding="utf-8")
+        try:
+            self.insights_file.write_text(content, encoding="utf-8")
+        except IOError as e:
+            logger.error(f"Failed to save insights to disk: {e}")
 
     # ==================== Rules ====================
 
@@ -552,7 +555,10 @@ class LongTermMemory:
         for rule in sorted(cond_rules, key=lambda x: x.created_at, reverse=True):
             content += rule.to_markdown() + "\n---\n\n"
 
-        self.rules_file.write_text(content, encoding="utf-8")
+        try:
+            self.rules_file.write_text(content, encoding="utf-8")
+        except IOError as e:
+            logger.error(f"Failed to save rules to disk: {e}")
 
     # ==================== Events ====================
 
@@ -661,7 +667,10 @@ class LongTermMemory:
             for event in events:
                 content += event.to_markdown() + "\n---\n\n"
 
-        self.events_file.write_text(content, encoding="utf-8")
+        try:
+            self.events_file.write_text(content, encoding="utf-8")
+        except IOError as e:
+            logger.error(f"Failed to save events to disk: {e}")
 
     # ==================== Self Reflection ====================
 
@@ -722,8 +731,11 @@ class LongTermMemory:
         else:
             new_content = current_content + "\n" + reflection
 
-        self.reflection_file.write_text(new_content, encoding="utf-8")
-        logger.info(f"Added weekly reflection: {start_date.strftime('%Y-%m-%d')}")
+        try:
+            self.reflection_file.write_text(new_content, encoding="utf-8")
+            logger.info(f"Added weekly reflection: {start_date.strftime('%Y-%m-%d')}")
+        except IOError as e:
+            logger.error(f"Failed to save weekly reflection to disk: {e}")
 
     # ==================== Validation ====================
 

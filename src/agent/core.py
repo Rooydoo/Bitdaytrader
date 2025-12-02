@@ -348,6 +348,11 @@ class MetaAgent:
             if signal.outcome is not None:
                 continue
 
+            # Skip if timestamp is missing
+            if signal.timestamp is None:
+                logger.warning(f"Signal {getattr(signal, 'id', 'unknown')} has None timestamp, skipping")
+                continue
+
             # Check if enough time has passed (1 hour after signal)
             time_since_signal = now_jst() - signal.timestamp
             if time_since_signal < timedelta(hours=1):
@@ -680,6 +685,10 @@ class MetaAgent:
 
         # Find if there was an earlier opportunity to exit with less loss
         entry_price = trade.entry_price
+        if entry_price is None or entry_price <= 0:
+            logger.warning(f"Trade has invalid entry_price: {entry_price}")
+            return None
+
         exit_price = trade.exit_price if hasattr(trade, "exit_price") else entry_price
         actual_loss = trade.pnl
 
@@ -690,6 +699,8 @@ class MetaAgent:
 
         for point in price_history:
             price = point.get("close", point.get("price"))
+            if price is None:
+                continue  # Skip invalid price points
             if trade.side == "BUY":  # LONG
                 if best_exit_price is None or price > best_exit_price:
                     best_exit_price = price
@@ -841,7 +852,8 @@ class MetaAgent:
         # Determine hindsight difficulty
         if matching_signals:
             # We had a signal but didn't trade - check confidence
-            max_conf = max(s.confidence for s in matching_signals if hasattr(s, "confidence"))
+            confidence_values = [s.confidence for s in matching_signals if hasattr(s, "confidence")]
+            max_conf = max(confidence_values) if confidence_values else 0.0
             if max_conf >= 0.6:
                 hindsight_difficulty = "obvious"  # High confidence signal, should have traded
             else:
