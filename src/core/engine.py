@@ -26,7 +26,7 @@ from src.features.calculator import FeatureCalculator
 from src.features.registry import FeatureRegistry
 from src.models.predictor import Predictor
 from src.reports.generator import ReportGenerator
-from src.risk.manager import RiskManager
+from src.risk.manager import RiskManager, DynamicLeverageConfig
 from src.telegram.bot import TelegramBot
 
 
@@ -107,6 +107,19 @@ class TradingEngine:
             self.long_term_memory,
             enable_adjustments=getattr(settings, 'enable_memory_adjustments', True),
         )
+
+        # Enable dynamic leverage if leverage is configured
+        if settings.use_leverage:
+            dynamic_leverage_config = DynamicLeverageConfig(
+                base_leverage=settings.leverage,
+                min_leverage=1.0,
+                max_leverage=min(settings.leverage * 2, 10.0),  # Up to 2x base, max 10x
+                # Confidence thresholds aligned with risk manager thresholds
+                high_confidence_threshold=0.85,
+                medium_confidence_threshold=settings.long_confidence_threshold,
+                low_confidence_threshold=0.65,
+            )
+            self.risk_manager.enable_dynamic_leverage(dynamic_leverage_config)
 
         # Store symbols for multi-asset trading
         self.symbols = list(settings.get_symbol_allocations().keys())
@@ -289,13 +302,6 @@ class TradingEngine:
         # Get capital
         capital = self._get_capital()
 
-        # Apply leverage to effective capital
-        if self.settings.use_leverage:
-            effective_capital = capital * self.settings.leverage
-            logger.debug(f"Leverage {self.settings.leverage}x: {capital:.0f} -> {effective_capital:.0f}")
-        else:
-            effective_capital = capital
-
         # Calculate features
         features = self.feature_calc.get_latest_features(df)
         if features is None:
@@ -338,8 +344,66 @@ class TradingEngine:
 
         logger.info(f"Signal: {direction} with confidence {confidence:.4f}")
 
+        # Calculate dynamic leverage based on prediction confidence and market conditions
+        current_price = df["close"].iloc[-1]
+        atr = self._calculate_current_atr(df)
+
+        if self.settings.use_leverage:
+            leverage_calc = self.risk_manager.calculate_dynamic_leverage(
+                confidence=confidence,
+                side=side,
+                current_price=current_price,
+                atr=atr,
+                market_conditions=self._get_market_conditions(df),
+            )
+            effective_capital = capital * leverage_calc.adjusted_leverage
+            logger.info(
+                f"Dynamic leverage: {leverage_calc.base_leverage:.1f}x → {leverage_calc.adjusted_leverage:.1f}x "
+                f"(capital: ¥{capital:,.0f} → ¥{effective_capital:,.0f})"
+            )
+            for reason in leverage_calc.reasons:
+                logger.debug(f"  - {reason}")
+        else:
+            effective_capital = capital
+
         # Execute trade
         await self._execute_entry(df, confidence, effective_capital, side)
+
+    def _get_market_conditions(self, df: pd.DataFrame) -> dict:
+        """Extract current market conditions from OHLCV data."""
+        if len(df) < 20:
+            return {}
+
+        current_price = df["close"].iloc[-1]
+        atr = self._calculate_current_atr(df)
+
+        # Calculate simple trend using 20-period SMA
+        sma20 = df["close"].tail(20).mean()
+        if current_price > sma20 * 1.01:
+            trend = "up"
+        elif current_price < sma20 * 0.99:
+            trend = "down"
+        else:
+            trend = "neutral"
+
+        # Calculate volatility level
+        if atr and current_price > 0:
+            vol_pct = atr / current_price
+            if vol_pct >= 0.03:
+                volatility = "high"
+            elif vol_pct <= 0.01:
+                volatility = "low"
+            else:
+                volatility = "normal"
+        else:
+            volatility = "normal"
+
+        return {
+            "trend": trend,
+            "volatility": volatility,
+            "price": current_price,
+            "atr": atr,
+        }
 
     async def _execute_entry(
         self,

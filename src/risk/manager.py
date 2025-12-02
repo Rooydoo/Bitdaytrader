@@ -24,6 +24,54 @@ class MemoryBasedAdjustment:
 
 
 @dataclass
+class DynamicLeverageConfig:
+    """Configuration for dynamic leverage adjustment."""
+
+    # Base leverage from settings
+    base_leverage: float = 2.0
+    min_leverage: float = 1.0  # Floor - never go below this
+    max_leverage: float = 4.0  # Ceiling - never exceed this
+
+    # Confidence thresholds and multipliers
+    high_confidence_threshold: float = 0.85  # >= 85% = aggressive
+    medium_confidence_threshold: float = 0.75  # >= 75% = normal
+    low_confidence_threshold: float = 0.65  # >= 65% = conservative
+
+    high_confidence_multiplier: float = 1.3  # Up to 30% more leverage
+    medium_confidence_multiplier: float = 1.0  # Normal leverage
+    low_confidence_multiplier: float = 0.7  # 30% less leverage
+    very_low_confidence_multiplier: float = 0.5  # 50% less leverage
+
+    # Volatility thresholds (ATR as % of price)
+    high_volatility_threshold: float = 0.03  # 3%+ = high vol
+    low_volatility_threshold: float = 0.01  # <1% = low vol
+
+    high_volatility_multiplier: float = 0.6  # Reduce leverage in high vol
+    normal_volatility_multiplier: float = 1.0
+    low_volatility_multiplier: float = 1.1  # Slightly more in low vol
+
+
+@dataclass
+class LeverageCalculation:
+    """Result of dynamic leverage calculation."""
+
+    base_leverage: float
+    adjusted_leverage: float
+    confidence_factor: float
+    volatility_factor: float
+    memory_factor: float
+    streak_factor: float
+    reasons: list[str]
+
+    @property
+    def total_adjustment(self) -> float:
+        """Total adjustment ratio from base."""
+        if self.base_leverage == 0:
+            return 0.0
+        return self.adjusted_leverage / self.base_leverage
+
+
+@dataclass
 class LosingStreakConfig:
     """Configuration for losing streak risk reduction."""
 
@@ -238,6 +286,10 @@ class RiskManager:
         self._memory_adjustments_enabled: bool = True
         self._last_memory_check: datetime | None = None
         self._cached_adjustments: list[MemoryBasedAdjustment] = []
+
+        # Dynamic leverage configuration
+        self._dynamic_leverage_config: DynamicLeverageConfig | None = None
+        self._dynamic_leverage_enabled: bool = False
 
     def set_long_term_memory(
         self,
@@ -459,6 +511,227 @@ class RiskManager:
                 len(self._long_term_memory.get_active_rules())
                 if self._long_term_memory else 0
             ),
+        }
+
+    # ========== Dynamic Leverage Methods ==========
+
+    def enable_dynamic_leverage(
+        self,
+        config: DynamicLeverageConfig | None = None,
+    ) -> None:
+        """
+        Enable dynamic leverage adjustment based on prediction confidence and market conditions.
+
+        Args:
+            config: Configuration for dynamic leverage, or use defaults
+        """
+        self._dynamic_leverage_config = config or DynamicLeverageConfig()
+        self._dynamic_leverage_enabled = True
+        logger.info(
+            f"Dynamic leverage enabled: base={self._dynamic_leverage_config.base_leverage}x, "
+            f"range=[{self._dynamic_leverage_config.min_leverage}x, {self._dynamic_leverage_config.max_leverage}x]"
+        )
+
+    def disable_dynamic_leverage(self) -> None:
+        """Disable dynamic leverage adjustment."""
+        self._dynamic_leverage_enabled = False
+        logger.info("Dynamic leverage disabled")
+
+    def calculate_dynamic_leverage(
+        self,
+        confidence: float,
+        side: str,
+        current_price: float | None = None,
+        atr: float | None = None,
+        market_conditions: dict | None = None,
+    ) -> LeverageCalculation:
+        """
+        Calculate dynamic leverage based on prediction confidence and market conditions.
+
+        Higher confidence predictions get more leverage to maximize profits.
+        Lower confidence or risky conditions get less leverage to minimize losses.
+
+        Args:
+            confidence: Prediction confidence (0.0 to 1.0)
+            side: "BUY" (LONG) or "SELL" (SHORT)
+            current_price: Current market price (for volatility calculation)
+            atr: Current ATR value (for volatility calculation)
+            market_conditions: Additional market context
+
+        Returns:
+            LeverageCalculation with adjusted leverage and breakdown
+        """
+        if not self._dynamic_leverage_enabled or not self._dynamic_leverage_config:
+            # Return base leverage without adjustment
+            base = getattr(self._dynamic_leverage_config, 'base_leverage', 2.0) if self._dynamic_leverage_config else 2.0
+            return LeverageCalculation(
+                base_leverage=base,
+                adjusted_leverage=base,
+                confidence_factor=1.0,
+                volatility_factor=1.0,
+                memory_factor=1.0,
+                streak_factor=1.0,
+                reasons=["Dynamic leverage disabled"],
+            )
+
+        config = self._dynamic_leverage_config
+        reasons = []
+
+        # 1. Base leverage
+        leverage = config.base_leverage
+
+        # 2. Confidence factor
+        confidence_factor = self._calculate_confidence_factor(confidence, config)
+        reasons.append(f"Confidence {confidence:.1%} → factor {confidence_factor:.2f}")
+
+        # 3. Volatility factor
+        volatility_factor = self._calculate_volatility_factor(
+            current_price, atr, config
+        )
+        if volatility_factor != 1.0:
+            vol_pct = (atr / current_price * 100) if current_price and atr else 0
+            reasons.append(f"Volatility {vol_pct:.1f}% → factor {volatility_factor:.2f}")
+
+        # 4. Memory-based factor (from learned rules)
+        memory_factor = self._calculate_memory_leverage_factor(side, market_conditions)
+        if memory_factor != 1.0:
+            reasons.append(f"Memory rules → factor {memory_factor:.2f}")
+
+        # 5. Losing streak factor (use existing method)
+        streak_factor = self.get_losing_streak_multiplier()
+        if streak_factor != 1.0:
+            reasons.append(
+                f"Losing streak ({self._drawdown.consecutive_losses} losses) → factor {streak_factor:.2f}"
+            )
+
+        # Apply all factors
+        adjusted_leverage = (
+            leverage
+            * confidence_factor
+            * volatility_factor
+            * memory_factor
+            * streak_factor
+        )
+
+        # Clamp to configured range
+        adjusted_leverage = max(config.min_leverage, min(config.max_leverage, adjusted_leverage))
+
+        # Log significant adjustments
+        if abs(adjusted_leverage - leverage) > 0.1:
+            logger.info(
+                f"Dynamic leverage: {leverage:.1f}x → {adjusted_leverage:.1f}x "
+                f"(conf={confidence_factor:.2f}, vol={volatility_factor:.2f}, "
+                f"mem={memory_factor:.2f}, streak={streak_factor:.2f})"
+            )
+
+        return LeverageCalculation(
+            base_leverage=leverage,
+            adjusted_leverage=adjusted_leverage,
+            confidence_factor=confidence_factor,
+            volatility_factor=volatility_factor,
+            memory_factor=memory_factor,
+            streak_factor=streak_factor,
+            reasons=reasons,
+        )
+
+    def _calculate_confidence_factor(
+        self,
+        confidence: float,
+        config: DynamicLeverageConfig,
+    ) -> float:
+        """Calculate leverage factor based on prediction confidence."""
+        if confidence >= config.high_confidence_threshold:
+            # High confidence: increase leverage
+            return config.high_confidence_multiplier
+        elif confidence >= config.medium_confidence_threshold:
+            # Medium confidence: normal leverage
+            return config.medium_confidence_multiplier
+        elif confidence >= config.low_confidence_threshold:
+            # Low confidence: reduce leverage
+            return config.low_confidence_multiplier
+        else:
+            # Very low confidence: significantly reduce
+            return config.very_low_confidence_multiplier
+
+    def _calculate_volatility_factor(
+        self,
+        current_price: float | None,
+        atr: float | None,
+        config: DynamicLeverageConfig,
+    ) -> float:
+        """Calculate leverage factor based on market volatility."""
+        if current_price is None or atr is None or current_price <= 0:
+            return config.normal_volatility_multiplier
+
+        # Calculate volatility as ATR / price
+        volatility_pct = atr / current_price
+
+        if volatility_pct >= config.high_volatility_threshold:
+            # High volatility: reduce leverage to manage risk
+            return config.high_volatility_multiplier
+        elif volatility_pct <= config.low_volatility_threshold:
+            # Low volatility: can use slightly more leverage
+            return config.low_volatility_multiplier
+        else:
+            return config.normal_volatility_multiplier
+
+    def _calculate_memory_leverage_factor(
+        self,
+        side: str,
+        market_conditions: dict | None = None,
+    ) -> float:
+        """Calculate leverage factor based on long-term memory rules."""
+        if not self._long_term_memory or not self._memory_adjustments_enabled:
+            return 1.0
+
+        factor = 1.0
+        direction = "LONG" if side == "BUY" else "SHORT"
+
+        # Get active rules from memory
+        rules = self._long_term_memory.get_active_rules()
+
+        for rule in rules:
+            if rule.confidence.value == "low":
+                continue
+
+            content_lower = rule.content.lower()
+
+            # Check for leverage-related rules
+            if "レバレッジ" in content_lower or "leverage" in content_lower.lower():
+                if self._rule_applies_to_conditions(rule, market_conditions):
+                    # Check if rule suggests reducing leverage
+                    if any(word in content_lower for word in ["下げる", "減らす", "控える", "reduce", "lower"]):
+                        reduction = 0.7 if rule.confidence.value == "high" else 0.85
+                        factor *= reduction
+                        logger.debug(f"Memory rule reduces leverage: {rule.content[:50]}...")
+
+                    # Check if rule suggests increasing leverage
+                    elif any(word in content_lower for word in ["上げる", "増やす", "積極", "increase"]):
+                        increase = 1.2 if rule.confidence.value == "high" else 1.1
+                        factor *= increase
+                        logger.debug(f"Memory rule increases leverage: {rule.content[:50]}...")
+
+            # Check for direction-specific caution rules
+            if direction.lower() in content_lower or direction in content_lower:
+                if any(word in content_lower for word in ["注意", "慎重", "careful", "caution"]):
+                    if self._rule_applies_to_conditions(rule, market_conditions):
+                        factor *= 0.8
+                        logger.debug(f"Memory rule advises caution for {direction}")
+
+        # Clamp factor to reasonable range
+        return max(0.5, min(1.5, factor))
+
+    def get_dynamic_leverage_status(self) -> dict:
+        """Get status of dynamic leverage configuration."""
+        config = self._dynamic_leverage_config
+        return {
+            "enabled": self._dynamic_leverage_enabled,
+            "base_leverage": config.base_leverage if config else None,
+            "min_leverage": config.min_leverage if config else None,
+            "max_leverage": config.max_leverage if config else None,
+            "high_confidence_threshold": config.high_confidence_threshold if config else None,
+            "current_streak_factor": self.get_losing_streak_multiplier(),
+            "consecutive_losses": self._drawdown.consecutive_losses,
         }
 
     def enable_conservative_mode(self, multiplier: float = 0.5) -> None:
