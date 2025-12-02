@@ -982,8 +982,8 @@ class MetaAgent:
             # Get stats before cleanup
             stats_before = self.memory.get_database_stats()
 
-            # Clean up old records (90 days retention)
-            deleted = self.memory.cleanup_old_records(retention_days=90)
+            # Clean up old records (3 years default, 5 years for param_history)
+            deleted = self.memory.cleanup_old_records()
 
             # Vacuum to reclaim space
             self.memory.vacuum()

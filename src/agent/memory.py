@@ -852,47 +852,60 @@ class AgentMemory:
 
     # ==================== Database Maintenance ====================
 
-    def cleanup_old_records(self, retention_days: int = 90) -> dict[str, int]:
+    # Retention periods (days)
+    RETENTION_FULL_DATA = 1095  # 3 years for detailed records
+    RETENTION_PARAM_HISTORY = 1825  # 5 years for parameter change audit trail
+
+    def cleanup_old_records(self, retention_days: int | None = None) -> dict[str, int]:
         """
-        Delete records older than retention_days.
+        Delete records older than retention period, keeping minimal summary.
+
+        Default retention:
+        - decisions, signal_outcomes, intervention_analysis: 3 years
+        - param_history: 5 years (audit trail)
 
         Args:
-            retention_days: Number of days to retain data (default 90)
+            retention_days: Override retention period (default uses RETENTION_FULL_DATA)
 
         Returns:
             Dict with count of deleted records per table
         """
+        if retention_days is None:
+            retention_days = self.RETENTION_FULL_DATA
+
         cutoff = (now_jst() - timedelta(days=retention_days)).isoformat()
+        param_cutoff = (now_jst() - timedelta(days=self.RETENTION_PARAM_HISTORY)).isoformat()
+
         deleted = {}
 
         with self._get_connection() as conn:
-            # Clean decisions table
+            # Clean decisions table (3 years)
             cursor = conn.execute(
                 "DELETE FROM decisions WHERE timestamp < ?",
                 (cutoff,)
             )
             deleted["decisions"] = cursor.rowcount
 
-            # Clean signal_outcomes table
+            # Clean signal_outcomes table (3 years)
             cursor = conn.execute(
                 "DELETE FROM signal_outcomes WHERE timestamp < ?",
                 (cutoff,)
             )
             deleted["signal_outcomes"] = cursor.rowcount
 
-            # Clean param_history table
-            cursor = conn.execute(
-                "DELETE FROM param_history WHERE timestamp < ?",
-                (cutoff,)
-            )
-            deleted["param_history"] = cursor.rowcount
-
-            # Clean intervention_analysis table
+            # Clean intervention_analysis table (3 years)
             cursor = conn.execute(
                 "DELETE FROM intervention_analysis WHERE timestamp < ?",
                 (cutoff,)
             )
             deleted["intervention_analysis"] = cursor.rowcount
+
+            # param_history has longer retention (5 years) for audit trail
+            cursor = conn.execute(
+                "DELETE FROM param_history WHERE timestamp < ?",
+                (param_cutoff,)
+            )
+            deleted["param_history"] = cursor.rowcount
 
             conn.commit()
 
